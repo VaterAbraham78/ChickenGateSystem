@@ -1,6 +1,6 @@
 /**************************************************/
 /***	ChickenGateSystem Rev.E					***/
-/***	Step-1									***/
+/***	Step-4									***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)	***/
 /***	Sensorspeisung KEIN bistabiles Relais	***/
 /***	Reset-Taster: KEINE Multifunktion mehr	***/
@@ -50,7 +50,6 @@ struct strINPUT	{																						// Struktur-Architektur fuer Eingaenge de
 	bool TstLicht;
 	bool TstReset;
 }	inputs = {false, false, false, false, false, false};												// 		...Struktur-Variable "inputs" erstellen und initialisieren
-
 struct strOUTPUT	{																					// Struktur-Architektur fuer Ausgaenge definieren
 	bool MotAuf;
 	bool MotZu;
@@ -58,7 +57,6 @@ struct strOUTPUT	{																					// Struktur-Architektur fuer Ausgaenge de
 	bool Licht;
 	bool Alarm;
 }	outputs = {false, false, false, false, false};														// 		...Struktur-Variable "outputs" erstellen und initialisieren	
-
 struct strBLINK	{																						// Sruktur-Architektur fuer verschiedene Blinkzeiten definieren
 	unsigned long MainOn;
 	unsigned long MainOff;
@@ -77,8 +75,6 @@ unsigned long waitTime = 30000;				// zusaetzliche Wartezeit zur maximalen Fahrz
 
 unsigned long displayTime = 1000;			// Display-Anzeigefrequenz							[in Millisekunden]
 unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
-
-bool hmiCorrection = false;					// Korrigierte Werte muessen ans HMI zurueckgesendet werden			
 
 int gwValueNacht = 0;						// HMI-Grenzwertvorgabe fuer Helligkeit "NACHT"
 int gwValueTag = 0;  						// HMI-Grenzwertvorgabe fuer Helligkeit "TAG"
@@ -109,23 +105,54 @@ enum SK_TOR {STANDBY, AUTOAUF, AUTOZU, HANDAUF, HANDZU};		// ENum-Definition der
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
+/***	NEXTION-TOUCHDISPLAY	***/
+
+		// component-ID (byte, bei Touch-Events zurueckgemeldet) und component-Name (String, fuer "get"/"set"-Textbefehle) sind hier PLATZHALTER. 
+		// Sie muessen mit dem tatsaechlichen Nextion-Projekt (im Nextion Editor: Attribut "id" bzw. Objektname jeder Komponente) uebereinstimmen
+		// Jede Komponente muss im Editor "Sends Component ID" bei Touch Release aktiviert haben, damit ein 0x65-Ereignis eintrifft.
+
+const byte NEX_CID_GWTAG = 1;				// Component-ID Eingabefeld "Grenzwert Tag"
+const byte NEX_CID_GWNACHT = 2;				// Component-ID Eingabefeld "Grenzwert Nacht"
+const byte NEX_CID_DIMM = 3;				// Component-ID Eingabefeld "Dimmstufe Licht Stall"
+const byte NEX_CID_MAXLIGHTTIME = 4;		// Component-ID Eingabefeld "max.Einschaltdauer Licht Stall"
+
+const char NEX_NAME_GWTAG[] = "n0";			// Objektname im Nextion-Projekt - Platzhalter
+const char NEX_NAME_GWNACHT[] = "n1";		// Objektname im Nextion-Projekt - Platzhalter
+const char NEX_NAME_DIMM[] = "n2";			// Objektname im Nextion-Projekt - Platzhalter
+const char NEX_NAME_MAXLIGHTTIME[] = "n3";	// Objektname im Nextion-Projekt - Platzhalter
+const char NEX_NAME_ACTDAYLIGHT[] = "n4";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+const char NEX_NAME_ACTMOTFUSE[] = "n5";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+const char NEX_NAME_ACTBATTSTATE[] = "n6";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+const char NEX_NAME_ACTSWITCHSTATE[] = "n7";// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+
+enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_DIMM, HMI_REQ_MAXLIGHTTIME};
+HMI_REQUEST hmiPendingRequest = HMI_NONE;	// aktuell offene "get"-Anfrage ans HMI
+unsigned long hmiRequestTime = 0;			// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
+unsigned long hmiRequestTimeout = 1000;		// Timeout in ms, falls HMI nicht antwortet
+unsigned long hmiSendTime = 2000;			// Sendefrequenz "hmiSend()" in Millisekunden
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
 /***	FUNKTIONSPROTOTYPEN	***/
 
-		// Wenn andere Entwicklungsumgebung als Arduino IDE verwendet wird. Ohne diese Prototypen wuerde nicht korrekt kompilieren werden.
-		// Muss bei Funktionsaenderungen bzw. Erweiterungen ebenfalls nachgefuehrt werden !!!
+		// Wenn andere Entwicklungsumgebung als Arduino IDE verwendet wird. Ohne diese Prototypen keine korrekte Kompilierung.
+		// Muss bei Funktionsaenderungen korrekt nachgefuehrt werden !!!
 
+/*** Ausserhalb loop	***/
 void isrInterrupt();
 void speicherRead();
 void speicherWrite();
 void checkGwBereich();
-void checkMinMax();
+void checkMinMax(int &viInput, int viGwLow, int viGwHigh);
 
+/*** Nextion-HMI	***/
 void nexFrameAuswerten(byte* frame, byte len);
 void nexWertUebernehmen(long value);
 void nexEnde();
 void nexGetValue(const char* compName);
 void nexSetValue(const char* compName, long value);
 
+/*** loop-Ablauf	***/
 void entprellen();
 void daylight();
 void motfuse();
@@ -141,34 +168,6 @@ void cycle();
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
-/***	NEXTION-TOUCHDISPLAY	***/
-
-		// component-ID (byte, bei Touch-Events zurueckgemeldet) und component-Name (String, fuer "get"/"set"-Textbefehle) sind hier PLATZHALTER. 
-		// Sie muessen mit dem tatsaechlichen Nextion-Projekt (im Nextion Editor: Attribut "id" bzw. Objektname jeder Komponente) uebereinstimmen
-		// Jede Komponente muss im Editor "Sends Component ID" bei Touch Release aktiviert haben, damit ein 0x65-Ereignis eintrifft.
-
-const byte NEX_CID_GWTAG = 1;				// Component-ID Eingabefeld "Grenzwert Tag"
-const byte NEX_CID_GWNACHT = 2;				// Component-ID Eingabefeld "Grenzwert Nacht"
-const byte NEX_CID_DIMM = 3;				// Component-ID Eingabefeld "Dimmstufe Licht Stall"
-const int NEX_CID_MAXLIGHTTIME = 4;			// Component-ID Eingabefeld "max.Einschaltdauer Licht Stall"
-
-const char NEX_NAME_GWTAG[] = "n0";			// Objektname im Nextion-Projekt - Platzhalter
-const char NEX_NAME_GWNACHT[] = "n1";		// Objektname im Nextion-Projekt - Platzhalter
-const char NEX_NAME_DIMM[] = "n2";			// Objektname im Nextion-Projekt - Platzhalter
-const char NEX_NAME_MAXLIGHTTIME[] = "n3";	// Objektname im Nextion-Projekt - Platzhalter
-const char NEX_NAME_ACTDAYLIGHT[] = "n4";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
-const char NEX_NAME_ACTMOTFUSE[] = "n5";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
-const char NEX_NAME_ACTBATTSTATE[] = "n6";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
-const char NEX_NAME_SWITCHSTATE[] = "n7";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
-
-enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_DIMM, HMI_REQ_NEX_MAXLIGHTTIME};
-HMI_REQUEST hmiPendingRequest = HMI_NONE;	// aktuell offene "get"-Anfrage ans HMI
-unsigned long hmiRequestTime = 0;			// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
-unsigned long hmiRequestTimeout = 1000;		// Timeout in ms, falls HMI nicht antwortet
-unsigned long hmiSendTime = 1000;			// Sendefrequenz "hmiSend()" in Millisekunden
-
-/*******************************************************************************************************/
-/*******************************************************************************************************/
 /***	INTERRUPT-ROUTINE	***/
 
 		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
@@ -176,7 +175,7 @@ unsigned long hmiSendTime = 1000;			// Sendefrequenz "hmiSend()" in Millisekunde
 		// die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
 		
 void isrInterrupt()	{
-
+	return;
 }
 
 /*******************************************************************************************************/
@@ -253,6 +252,7 @@ void speicherWrite()	{
 	static byte vbNachtHighbyte = 0;										// HighByte "GW-NACHT" initialisieren
 	static byte vbLightTimeLowbyte = 0;										// LowByte "EINSCHALTDAUERR" initialisieren
 	static byte vbLightTimeHighbyte = 0;									// HighByte "EINSCHALTDAUER" initialisieren
+	static byte vbDimmlevel = 0;											// Byte "PWM-DIMMSTUFE" initialisieren
 	
 	vbTagLowbyte = gwValueTag &0xFF;										// LowByte aus "GW-TAG" extrahieren
 	vbTagHighbyte = (gwValueTag >> 8) &0xFF;								// HighByte aus "GW-TAG" extrahieren
@@ -260,20 +260,21 @@ void speicherWrite()	{
 	vbNachtHighbyte = (gwValueNacht >> 8) &0xFF;							// HighByte aus "GW-NACHT" extrahieren
 	vbLightTimeLowbyte = maxLightTime &0xFF;								// LowByte aus "EINSCHALTDAUER" extrahieren
 	vbLightTimeHighbyte = (maxLightTime >> 8) &0xFF;						// HighByte aus "EINSCHALTDAUER" extrahieren
+	vbDimmlevel = dimmlevel;												// Wertuebergabe von INT zu BYTE
 	
-	EEPROM.update(0, vbTagLowbyte);											// GW "TAG" LowByte in Speicher schreiben falls noetig -> dauert 3,3ms
-	EEPROM.update(1, vbTagHighbyte);										// GW "TAG" HighByte in Speicher schreiben falls noetig -> dauert 3,3ms
-	EEPROM.update(2, vbNachtLowbyte);										// GW "NACHT" LowByte in Speicher schreiben falls noetig -> dauert 3,3ms
-	EEPROM.update(3, vbNachtHighbyte);										// GW "NACHT" HighByte in Speicher schreiben falls noetig -> dauert 3,3ms
-	EEPROM.update(4, vbLightTimeLowbyte);									// GW "EINSCHALTDAUER" LowByte in Speicher schreiben falls noetig -> dauert 3,3ms
-	EEPROM.update(5, vbLightTimeHighbyte);									// GW "EINSCHALTDAUER" HighByte in Speicher schreiben falls noetig -> dauert 3,3ms
-	EEPROM.update(6, dimmlevel);											// PWM-Dimmstufe "Licht Stall" in Speicher schreiben falls noetig -> dauert 3,3ms
+	EEPROM.update(0, vbTagLowbyte);											// GW "TAG" LowByte in Speicher schreiben
+	EEPROM.update(1, vbTagHighbyte);										// GW "TAG" HighByte in Speicher schreiben
+	EEPROM.update(2, vbNachtLowbyte);										// GW "NACHT" LowByte in Speicher schreiben
+	EEPROM.update(3, vbNachtHighbyte);										// GW "NACHT" HighByte in Speicher schreiben
+	EEPROM.update(4, vbLightTimeLowbyte);									// GW "EINSCHALTDAUER" LowByte in Speicher schreiben
+	EEPROM.update(5, vbLightTimeHighbyte);									// GW "EINSCHALTDAUER" HighByte in Speicher schreiben
+	EEPROM.update(6, vbDimmlevel);											// PWM-Dimmstufe "Licht Stall" in Speicher schreiben
 return;
 }
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
-/***	FC "GW-Bereiche Helligkeit gegenseitig pruefen"	***/
+/***	FC "Helligkeit-GW-Bereiche gegenseitig pruefen"	***/
 
 void checkGwBereich()	{
 	int viLowMin = 0;														// Unteres Bereichsende des Minimumwertes
@@ -308,14 +309,14 @@ return;
 /*******************************************************************************************************/
 /***	FC "Min/Max-Parameterpruefung"	***/
 
-void checkMinMax(int &viInput, int viGwLow, int viGwHigh)	{				Eingangsparamter als Referenz (CallByReference)
+void checkMinMax(int &viInput, int viGwLow, int viGwHigh)	{				// Haupt-Eingangsparamter als Referenz (CallByReference)
 	if (viInput < viGwLow)	{
 		viInput = viGwLow;
 	}
 	if (viInput > viGwHigh)	{
 		viInput = viGwHigh;
 	}
-	return;
+return;
 }
 
 /*******************************************************************************************************/
@@ -504,10 +505,10 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 			HMI_REQUEST req = HMI_NONE;
 			const char* name = nullptr;
 
-			if (compId == NEX_CID_GWTAG)		{ req = HMI_REQ_GWTAG;   name = NEX_NAME_GWTAG;   }
-			else if (compId == NEX_CID_GWNACHT)	{ req = HMI_REQ_GWNACHT; name = NEX_NAME_GWNACHT; }
-			else if (compId == NEX_CID_HYST)	{ req = HMI_REQ_HYST;    name = NEX_NAME_HYST;    }
-			else if (compId == NEX_CID_DIMM)	{ req = HMI_REQ_DIMM;    name = NEX_NAME_DIMM;    }
+			if (compId == NEX_CID_GWTAG)			{ req = HMI_REQ_GWTAG;			name = NEX_NAME_GWTAG;	}
+			else if (compId == NEX_CID_GWNACHT)		{ req = HMI_REQ_GWNACHT;		name = NEX_NAME_GWNACHT;	}
+			else if (compId == NEX_CID_DIMM)		{ req = HMI_REQ_DIMM;			name = NEX_NAME_DIMM;	}
+			else if (compId == NEX_CID_MAXLIGHTTIME){ req = HMI_REQ_MAXLIGHTTIME;	name = NEX_NAME_MAXLIGHTTIME;	}
 
 			if (req != HMI_NONE)	{										// Wenn eine bekannte Eingabekomponente betroffen ist dann...
 				nexGetValue(name);											// ...aktuellen Wert aktiv anfragen
@@ -530,37 +531,44 @@ void nexWertUebernehmen(long value)	{
 	int neuerWert = (int)value;
 
 	switch (hmiPendingRequest)	{
-		case HMI_REQ_GWTAG:
-			if ((neuerWert >= minGwValueTag) && (neuerWert <= maxGwValueTag))	{	// Nur uebernehmen wenn innerhalb der zulaessigen Toleranz
-				gwValueTag = neuerWert;
-				plausiHelligkeit();											// Tag/Nacht-Abstand pruefen und ggf. korrigieren
+		case HMI_REQ_GWTAG:	{
+			int vorTag = gwValueTag;											// Werte vor der Aenderung merken (checkGwBereich()
+			int vorNacht = gwValueNacht;										// kann bei Bedarf BEIDE Grenzwerte anpassen)
+			gwValueTag = neuerWert;
+			checkGwBereich();													// Tag/Nacht/Hysterese-Verhaeltnis pruefen und ggf. korrigieren
+			if ((gwValueTag != vorTag) || (gwValueNacht != vorNacht))	{		// Nur bei tatsaechlicher Aenderung...
+				speicherWrite();												// ...remanent sichern
+			}
+		} break;
+		case HMI_REQ_GWNACHT:	{
+			int vorTag = gwValueTag;
+			int vorNacht = gwValueNacht;
+			gwValueNacht = neuerWert;
+			checkGwBereich();
+			if ((gwValueTag != vorTag) || (gwValueNacht != vorNacht))	{
 				speicherWrite();
 			}
-		break;
-		case HMI_REQ_GWNACHT:
-			if ((neuerWert >= minGwValueNacht) && (neuerWert <= maxGwValueNacht))	{
-				gwValueNacht = neuerWert;
-				plausiHelligkeit();
+		} break;
+		case HMI_REQ_DIMM:	{
+			int vorher = dimmlevel;
+			dimmlevel = neuerWert;
+			checkMinMax(dimmlevel, 0, 100);
+			if (dimmlevel != vorher)	{
 				speicherWrite();
 			}
-		break;
-		case HMI_REQ_HYST:
-			if ((neuerWert >= minGwHysterese) && (neuerWert <= maxGwHysterese))	{
-				gwHysterese = neuerWert;
-				plausiHelligkeit();
+		} break;
+		case HMI_REQ_MAXLIGHTTIME:	{
+			int vorher = maxLightTime;
+			maxLightTime = neuerWert;
+			checkMinMax(maxLightTime, 1, 1800);
+			if (maxLightTime != vorher)	{
 				speicherWrite();
 			}
-		break;
-		case HMI_REQ_DIMM:
-			if ((neuerWert >= 0) && (neuerWert <= 100))	{
-				dimmlevel = neuerWert;
-				speicherWrite();
-			}
-		break;
+		} break;
 		default:
 		break;
 	}
-	hmiPendingRequest = HMI_NONE;											// Anfrage abgeschlossen
+	hmiPendingRequest = HMI_NONE;												// Anfrage abgeschlossen
 return;
 }
 
@@ -831,7 +839,8 @@ return;
 		// Licht per Software-PWM (kooperativ, ueber micros()) im Verhaeltnis "dimmlevel" (0..100%) getaktet, da Ausgabepin kein HW-PWM unterstutzt.
 		// WICHTIG: Diese Software-PWM funktioniert nur, solange loop() regelmaessig durchlaeuft - sie darf nicht im Sleepmode aktiv sein.
 		
-void beleuchtung()	{	
+void beleuchtung()	{
+	
 	static unsigned long vulTime = 0;      									// momentane Laufzeit
 	static bool vxState = false;      		          			    		// laufender Status
 	static bool vxOldState = false;											// vorheriger Status
@@ -848,7 +857,7 @@ void beleuchtung()	{
 			vxState = false;												// ...laufender Status "vxState" auf FALSE
 		}
 	}
-	if ((millis() - vulTime > (unsigned long(maxLightTime*1000))))	{		// Wenn maximale Einschaltdauer erreicht dann...	
+	if ((millis() - vulTime > ((unsigned long)maxLightTime*1000uL)))	{	// Wenn maximale Einschaltdauer erreicht dann...	
 		vxState = false;													// ...laufender Status "vxState" auf FALSE
 	}
 	vxOldState = inputs.TstLicht;											// letzten Schaltzustand merken
@@ -963,15 +972,16 @@ return;
 /*******************************************************************************************************/
 /***	FC "HMI Daten senden"	***/
 
-		// Sendet periodisch (hmiSendTime) ODER sofort bei anstehender Korrektur (hmiKorrekturPending).
-
 void hmiSend()	{
 	static unsigned long vulTime = 0;
+	byte switchState = 0;													// Bitmaske der entprellten Eingaenge
 
-	if ((millis() - vulTime >= hmiSendTime) || (hmiKorrekturPending == true))	{
+	if (millis() - vulTime >= hmiSendTime)	{								// Periodische Aktualisierung
 		vulTime = millis();
-		hmiKorrekturPending = false;
 
+		switchState = (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
+					| (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
+					
 		nexSetValue(NEX_NAME_GWTAG, gwValueTag);
 		nexSetValue(NEX_NAME_GWNACHT, gwValueNacht);
 		nexSetValue(NEX_NAME_DIMM, dimmlevel);
@@ -979,7 +989,7 @@ void hmiSend()	{
 		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);
 		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);
 		nexSetValue(NEX_NAME_ACTBATTSTATE, batterieVolt);
-		nexSetValue(NEX_NAME_SWITCHSTATE, );
+		nexSetValue(NEX_NAME_ACTSWITCHSTATE, switchState);
 	}
 return;
 }
