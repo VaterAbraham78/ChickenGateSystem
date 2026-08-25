@@ -1,12 +1,13 @@
 /**************************************************/
 /***	ChickenGateSystem Rev.E					***/
-/***	Step-4									***/
+/***	Step-10									***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)	***/
 /***	Sensorspeisung KEIN bistabiles Relais	***/
 /***	Reset-Taster: KEINE Multifunktion mehr	***/
 /***	Helligkeit-Lernen entfernt (via HMI)	***/
 /***	Software-PWM Innenbeleuchtung Stall		***/
 /***	UART-Kommunikation Nextion-Touchpanel	***/
+/***	UART-Kanalwechsel bei Start ausloesen	***/
 /**************************************************/
 
 /*******************************************************************************************************/
@@ -75,6 +76,8 @@ unsigned long waitTime = 30000;				// zusaetzliche Wartezeit zur maximalen Fahrz
 
 unsigned long displayTime = 1000;			// Display-Anzeigefrequenz							[in Millisekunden]
 unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
+unsigned long debugBootTime = 3000;			// Notwendige Haltezeit des Reset-Tasters bei Controllerstart	[in Millisekunden]
+bool debugMode = false;						// Debug-Modus bei Controllerstart auswerten		[TRUE=SerialMonitor / FALSE=Nextion-HMI]
 
 int gwValueNacht = 0;						// HMI-Grenzwertvorgabe fuer Helligkeit "NACHT"
 int gwValueTag = 0;  						// HMI-Grenzwertvorgabe fuer Helligkeit "TAG"
@@ -85,11 +88,11 @@ bool stateTag = true;    					// Status "Tag" beim Start auf "TRUE" initialisier
 unsigned long pwmPeriod = 10000;			// Software-PWM-Periodendauer in Mikrosekunden (100 Hz)
 int dimmlevel = 100;						// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int maxLightTime = 60;						// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
-bool lichtEin = false;						// Statusmerker "Licht Stall" fuer PWM-Dimming
 
 int motfuseVolt = 0;						// aktuelle Spannung "RM Motorsicherung"
 int gwMotfuseVolt = 546;					// Grenzwert "RM Motorsicherung"					[546=8.00V=Sicherung ausgeloest]
 int batterieVolt = 0;						// aktuelle Batteriespannung
+int batterieProzent = 0;					// aktuelle Batterieladung in Prozent				[SOC, aus "batterieVolt" abgeleitet]
 int gwBatterieVolt = 810;					// Grenzwert "Batteriespannung tief"				[810=11.85V=30%]
 
 int cntSafetyFail = 0;						// laufender Zaehler "Fahrfehler Tor"
@@ -140,6 +143,7 @@ unsigned long hmiSendTime = 2000;			// Sendefrequenz "hmiSend()" in Millisekunde
 
 /*** Ausserhalb loop	***/
 void isrInterrupt();
+void checkDebugMode();
 void speicherRead();
 void speicherWrite();
 void checkGwBereich();
@@ -157,32 +161,23 @@ void entprellen();
 void daylight();
 void motfuse();
 void batterie();
+byte battAdcToPercent(int adcWert);
 void hmiRead();
 void torsteuerung();
 void beleuchtung();
 void ausgaenge();
 void alarmhandling();
+byte bitmaskSwitchState();
 void hmiSend();
 void displayanzeige();
 void cycle();
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
-/***	INTERRUPT-ROUTINE	***/
-
-		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
-		// Ab Schritt 2 (Sleepmode): bleibt trotzdem leer - sie dient nur dem Aufwecken der CPU,
-		// die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
-		
-void isrInterrupt()	{
-	return;
-}
-
-/*******************************************************************************************************/
-/*******************************************************************************************************/
 /***	SETUPCODE	***/
 
 void setup()	{
+	checkDebugMode();						// Debug-Mode pruefen
 	Serial.begin(9600);						// Serial Port für Anzeige oeffnen
 	pinMode(INInterrupt, INPUT);			// Sammel-Interrupt fuer Sleepmode
 		attachInterrupt(digitalPinToInterrupt(INInterrupt), isrInterrupt, RISING);		// Interrupt aus Sleepmode
@@ -207,14 +202,57 @@ void loop()	{
 	daylight();								// FC "Messung Tageslicht"
 	motfuse();								// FC "Messung RM Motorsicherung"
 	batterie();								// FC "Messung Batterieladung"
-	hmiRead();								// FC "HMI Daten empfangen"
+	if (debugMode == false)	{
+		hmiRead();							// FC "HMI Daten empfangen"
+	}
 	torsteuerung();							// FC "Torsteuerung"
 	beleuchtung();							// FC "Innenbeleuchtung Stall"
 	ausgaenge();							// FC "Ausgangsvariablen setzen"
 	alarmhandling();						// FC "Alarmhandling" mit Parameteruebergabe der verschiedenen Blinkzeiten
-	hmiSend();								// FC "HMI Daten senden"
+	if (debugMode == false)	{
+		hmiSend();							// FC "HMI Daten senden"
+	} else {
 	displayanzeige();						// FC "Displayanzeige"
+	}
 	cycle();								// FC "Zykluszeit berechnen"
+}
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+/***	INTERRUPT-ROUTINE	***/
+
+		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
+		// Ab Schritt 2 (Sleepmode): bleibt trotzdem leer - sie dient nur dem Aufwecken der CPU,
+		// die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
+		
+void isrInterrupt()	{
+	return;
+}
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+/***	FC "DEBUG-MODE: UART-AUSWAHL BEIM BOOTING	***/
+
+		// Taster beim Start NICHT gedrueckt -> sofort Nextion-Modus (kein Zeitverlust).
+		// Taster gedrueckt -> sofern "debugBootTime" erreicht wird, wird der Serial-Monitor-Modus fuer den Debug-Modus aktiviert.
+
+void checkDebugMode()	{
+	unsigned long startZeit = 0;
+	pinMode(INTstReset, INPUT);												// Muss bereits vor der Initialisierung als Eingang konfiguriert sein
+
+	if (digitalRead(INTstReset) == LOW)	{									// Taster beim Start nicht gedrueckt dann...
+		debugMode = false;													// ...sofort Nextion-Modus, kein Warten noetig
+		return;
+	}
+	debugMode = true;														// Annahme: Debug-Modus aktivieren -> bestaetigt wenn Taster durchgehend gehalten wird
+	startZeit = millis();
+	while (millis() - startZeit < debugBootTime)	{
+		if (digitalRead(INTstReset) == LOW)	{								// Wenn Taster vorzeitig losgelassen wird dann...
+			debugMode = false;												// ...wenn vor Pruefzeit Taster geloest wird dann Nextion-Modus, kein Warten noetig
+			return;
+		}
+	}																		// Wenn Funktion durchlaeuft dann "Debug-Mode bzw. Serial-Monitor aktiv"
+	return;
 }
 
 /*******************************************************************************************************/
@@ -235,15 +273,16 @@ void speicherRead()	{
 	checkGwBereich();														// Grenzwertvorgabe in FC pruefen
 	
 	maxLightTime = vbLightTimeLowbyte + ((vbLightTimeHighbyte << 8) & 0xFF00);	// Low- und HighByte "EINSCHALTDAUER LICHT STALL" zusammenfuehren
-		
 	checkMinMax(maxLightTime, 1, 1800);										// "EINSCHALTDAUER Licht Stall" -> Min/Max-Begrenzung in Sekunden
+	
+	dimmlevel = vbDimmlevel;
 	checkMinMax(dimmlevel, 0, 100);											// "DIMMSTUFE Licht Stall" -> Min/Max-Begrenzung in Prozent
 return;
 }
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
-/***	FC "Remanenter Specher schreiben"	***/
+/***	FC "Remanenter Speicher schreiben"	***/
 
 void speicherWrite()	{
 	static byte vbTagLowbyte = 0;											// LowByte "GW-TAG" initialisieren
@@ -260,7 +299,7 @@ void speicherWrite()	{
 	vbNachtHighbyte = (gwValueNacht >> 8) &0xFF;							// HighByte aus "GW-NACHT" extrahieren
 	vbLightTimeLowbyte = maxLightTime &0xFF;								// LowByte aus "EINSCHALTDAUER" extrahieren
 	vbLightTimeHighbyte = (maxLightTime >> 8) &0xFF;						// HighByte aus "EINSCHALTDAUER" extrahieren
-	vbDimmlevel = dimmlevel;												// Wertuebergabe von INT zu BYTE
+	vbDimmlevel = (byte)dimmlevel;											// Wertuebergabe von INT zu BYTE
 	
 	EEPROM.update(0, vbTagLowbyte);											// GW "TAG" LowByte in Speicher schreiben
 	EEPROM.update(1, vbTagHighbyte);										// GW "TAG" HighByte in Speicher schreiben
@@ -433,6 +472,7 @@ void batterie()	{
   
 	viBatterieVolt = analogRead(INABattstate);								// Batteriespannung messen -> Integerwert 0..1024
 	batterieVolt = viBatterieVolt;											// -> Ubertrag zu globaler Variable fuer Displayanzeie
+	batterieProzent = battAdcToPercent(viBatterieVolt);						// Ladezustand in Prozent ableiten
 
 // Batterie-Ladezustand ermitteln
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
@@ -447,6 +487,53 @@ void batterie()	{
 		vxState = false;                  									// ...Laufzeit aktualisieren
 	}
 return;
+}
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+/***	FC "Batterie-Ladezustand aus Batteriespannung ableiten (AGM/Gel)"	***/
+		
+		// Gebraeuchliche Naeherungswerte fuer AGM/Gel-Batterien
+		// Bezogen an bestehenden Referenzpunkt "gwBatterieVolt" (810 ADC = 11.85V = 30%)
+		// ADC-Spannung gemaess Spannungsteiler 12..15V = 4..5V
+
+struct BattSocPunkt	{
+	int adcWert;															// ADC-Rohwert (0..1023)
+	byte prozent;															// zugehoeriger Ladezustand in Prozent
+};
+
+const BattSocPunkt battSocTabelle[] = {										// Tabelle ABSTEIGEND sortiert
+	{874, 100},		// 12.80V - voll geladen (Ruhespannung)
+	{860,  90},		// 12.60V
+	{853,  80},		// 12.50V
+	{847,  70},		// 12.40V
+	{840,  60},		// 12.30V
+	{833,  50},		// 12.20V
+	{819,  40},		// 12.00V
+	{810,  30},		// 11.85V - bestehender Referenzpunkt "gwBatterieVolt"
+	{795,  20},		// 11.65V
+	{775,  10},		// 11.35V
+	{717,   0}		// 10.50V - als leer betrachtet
+};
+const byte battSocTabelleLen = sizeof(battSocTabelle) / sizeof(battSocTabelle[0]);
+
+byte battAdcToPercent(int adcWert)	{
+	byte i;
+
+	if (adcWert >= battSocTabelle[0].adcWert)	{							// Oberhalb des hoechsten Tabellenwertes dann...
+		return battSocTabelle[0].prozent;									// ...auf 100% begrenzen
+	}
+	if (adcWert <= battSocTabelle[battSocTabelleLen - 1].adcWert)	{		// Unterhalb des tiefsten Tabellenwertes dann...
+		return battSocTabelle[battSocTabelleLen - 1].prozent;				// ...auf 0% begrenzen
+	}
+
+	for (i = 0; i < (battSocTabelleLen - 1); i++)	{						// Passendes Tabellensegment suchen...
+		if ((adcWert <= battSocTabelle[i].adcWert) && (adcWert >= battSocTabelle[i + 1].adcWert))	{
+			return map(adcWert, battSocTabelle[i + 1].adcWert, battSocTabelle[i].adcWert,			// ...und linear zwischen den beiden
+					   battSocTabelle[i + 1].prozent, battSocTabelle[i].prozent);					//    Stuetzpunkten interpolieren
+		}
+	}
+return 0;																	// Sicherheitsnetz, wird bei obiger Abdeckung nie erreicht
 }
 
 /*******************************************************************************************************/
@@ -851,19 +938,14 @@ void beleuchtung()	{
 		vulTime = millis();             									// ...permanent die Laufzeit merken
 	}
 	if ((inputs.TstLicht == true) && (vxOldState == false))	{				// Wenn Taster mit positiver Flanke gedrueckt dann...
-		if (vxState == false)	{											// ... wenn Zustand vorher AUS war, dann
-			vxState = true;													// ...laufender Status "vxState" auf TRUE
-		} else	{															// ... wenn Zustand vorher EIN war, dann
-			vxState = false;												// ...laufender Status "vxState" auf FALSE
-		}
+		vxState = !vxState;													// ... wenn Zustand vorher AUS war, dann invertieren
 	}
 	if ((millis() - vulTime > ((unsigned long)maxLightTime*1000uL)))	{	// Wenn maximale Einschaltdauer erreicht dann...	
 		vxState = false;													// ...laufender Status "vxState" auf FALSE
 	}
 	vxOldState = inputs.TstLicht;											// letzten Schaltzustand merken
-	lichtEin = vxState;														// Zustand an PWM-Ablauf uebergeben
 
-	if (lichtEin == true)	{
+	if (vxState == true)	{
 			pwmOnTime = (unsigned long)dimmlevel * pwmPeriod / 100;			// Einschaltzeit aus Dimmstufe berechnen (0..pwmPeriod)
 		if (micros() - pwmCycleStart >= pwmPeriod)	{						// Wenn aktuelle Periode abgelaufen dann...
 			pwmCycleStart = micros();										// ...neue Periode starten
@@ -970,6 +1052,15 @@ return;
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
+/***	FC "Bitmaske Eingangssignale"	***/
+
+byte bitmaskSwitchState()	{
+	return (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
+		 | (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
+}
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
 /***	FC "HMI Daten senden"	***/
 
 void hmiSend()	{
@@ -979,16 +1070,15 @@ void hmiSend()	{
 	if (millis() - vulTime >= hmiSendTime)	{								// Periodische Aktualisierung
 		vulTime = millis();
 
-		switchState = (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
-					| (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
+		switchState = bitmaskSwitchState();
 					
 		nexSetValue(NEX_NAME_GWTAG, gwValueTag);
 		nexSetValue(NEX_NAME_GWNACHT, gwValueNacht);
 		nexSetValue(NEX_NAME_DIMM, dimmlevel);
 		nexSetValue(NEX_NAME_MAXLIGHTTIME, maxLightTime);
-		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);
-		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);
-		nexSetValue(NEX_NAME_ACTBATTSTATE, batterieVolt);
+		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert
+		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);						// Rohwert
+		nexSetValue(NEX_NAME_ACTBATTSTATE, batterieProzent);				// Prozentwert
 		nexSetValue(NEX_NAME_ACTSWITCHSTATE, switchState);
 	}
 return;
@@ -1000,46 +1090,59 @@ return;
 
 void displayanzeige()	{
 	static unsigned long vulTime = 0;										// laufende Diplayzeit initialisieren
+	byte switchState = 0;													// Ergebnisse FC "Bitmaske
 			
 	if (millis() - vulTime >= displayTime) {								// Wenn "laufende Displayzeit" groesser Anzeigefrequenz dann...
 		vulTime = millis();													// ...laufende Displayzeit aktualisieren
-/*
-		Serial.print("Erster Eingang: ");									// ...Anzeige Zustand Taster-1
-		Serial.println(inputs.Safety1);
-		Serial.print("Zweiter Eingang: ");									// ...Anzeige Zustand Taster-2
-		Serial.println(inputs.Safety2);
-		Serial.print("Dritter Eingang: ");									// ...Anzeige Zustand Taster-3
-		Serial.println(inputs.TstTorAuf);
-		Serial.print("Vierter Eingang: ");									// ...Anzeige Zustand Taster-4
-		Serial.println(inputs.TstTorZu);
-		Serial.print("Fuenfter Eingang: ");									// ...Anzeige Zustand Taster-5
-		Serial.println(inputs.TstLicht);
-		Serial.print("Sechster Eingang: ");									// ...Anzeige Zustand Taster-6
-		Serial.println(inputs.TstReset);
-		Serial.println();
-*/
-		Serial.print("Helligkeit: ");										// ...Anzeige aktueller Lichtwert
-		Serial.print(lightvalue);
-		Serial.print("   ");
+		
 		Serial.print("Grenzwert Tag: ");									// ...Anzeige GW Tag
 		Serial.print(gwValueTag);
 		Serial.print("   ");
 		Serial.print("Grenzwert Nacht: ");									// ...Anzeige GW Nacht
 		Serial.print(gwValueNacht);
 		Serial.print("   ");
-		Serial.print("Tagesstatus: ");										// ...Anzeige Tagesstatus
+		Serial.print("Dimmstufe Licht Stall: ");							// ...Anzeige PWM-Dimmstufe "Licht Stall"
+		Serial.print(dimmlevel);
+		Serial.print("%");
+		Serial.print("   ");
+		Serial.print("Einschaltdauer Licht Stall: ");						// ...Anzeige maximale Einschaltzeit "Licht Stall"
+		Serial.print(maxLightTime);
+		Serial.print("   ");
+		Serial.println();
+		Serial.print("Helligkeit: ");										// ...Anzeige aktueller Lichtwert "Tageslicht" als Rohwert
+		Serial.print(lightvalue);
+		Serial.print("   ");
+		Serial.print("Tagesstatus: ");										// ...Anzeige Status "Tag"
 		Serial.print(stateTag);
 		Serial.print("   ");
 		Serial.println();
 		
-		Serial.print("Spg.Motorsicherung: ");								// ...Anzeige aktuelle Sicherungsspannung "RM Motorsicherung"
+		Serial.print("Spg.Motorsicherung: ");								// ...Anzeige Messung Sicherungsspannung "RM Motorsicherung" als Rohwert
 		Serial.print(motfuseVolt);
 		Serial.println("   ");
-		
-		Serial.print("Batterieladung: ");									// ...Anzeige aktuelle Batteriespannung
+		Serial.print("Batterieladung: ");									// ...Anzeige Messung Batterieladung als Rohwert
 		Serial.print(batterieVolt);
-		Serial.println("   ");
-			
+		Serial.print(" (");
+		Serial.print(batterieProzent);										// ...Anzeige Messung Batterieladung in Prozent
+		Serial.println("%)");
+		
+		switchState = bitmaskSwitchState();								
+		Serial.print("Schalterzustand (Bitmaske wie HMI): ");				// ...Anzeige der entprellten Eingangssignale
+		Serial.print(switchState);
+		Serial.print("  [Safety1=");
+		Serial.print(inputs.Safety1);
+		Serial.print(" Safety2=");
+		Serial.print(inputs.Safety2);
+		Serial.print(" TorAuf=");
+		Serial.print(inputs.TstTorAuf);
+		Serial.print(" TorZu=");
+		Serial.print(inputs.TstTorZu);
+		Serial.print(" Licht=");
+		Serial.print(inputs.TstLicht);
+		Serial.print(" Reset=");
+		Serial.print(inputs.TstReset);
+		Serial.println("]");
+		
 		Serial.print("Zykluszeit: ");                       				// ...Anzeige der aktuellen Zykluszeit
 		Serial.print(cycleTime);
 		Serial.println(" Microsekunden");
