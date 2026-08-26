@@ -1,20 +1,21 @@
 /**************************************************/
 /***	ChickenGateSystem Rev.E					***/
-/***	Step-10									***/
+/***	Step-15									***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)	***/
 /***	Sensorspeisung KEIN bistabiles Relais	***/
 /***	Reset-Taster: KEINE Multifunktion mehr	***/
-/***	Helligkeit-Lernen entfernt (via HMI)	***/
-/***	Software-PWM Innenbeleuchtung Stall		***/
+/***	Parameter via Touch-HMI-Eingabefeld		***/
+/***	Software-PWM "Innenbeleuchtung Stall"	***/
 /***	UART-Kommunikation Nextion-Touchpanel	***/
-/***	UART-Kanalwechsel bei Start ausloesen	***/
+/***	UART-Kanalwechsel bei Start (Debug-Mode	***/
+/***	allgemeine Codeverbesserungen			***/
 /**************************************************/
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
 /***	BIBLIOTHEKEN	***/
 
-#include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung des Helligkeit-GW
+#include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der HMI-Eingabeparameter
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
@@ -34,8 +35,8 @@ const byte INTstLicht = 7;					// Taster "Licht Stall"
 const byte INTstReset = 8;    				// Taster "Reset"
 const byte OUTMotAuf = 9;					// Motorbefehl "Tor AUF"					(bistabiles Relais mit 2 Spulen)
 const byte OUTMotZu = 10;   				// Motorbefehl "Tor ZU"						(bistabiles Relais mit 2 Spulen)
-const byte OUTPowOn = 11;  					// Torsensoren & partielle Motorspeisung "einschalten"
-const byte OUTLicht = 12;   				// Licht "Stall" einschalten
+const byte OUTPowOn = 11;  					// "Torsensoren/partielle Motorspeisung" einschalten
+const byte OUTLicht = 12;   				// Innenbeleuchtung "Licht Stall" einschalten
 const byte OUTAlarm = 13;     				// Signal-LED "Alarm"
 
 const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstReset};		// Array "arrPINIn" definieren und initialisieren
@@ -105,6 +106,15 @@ bool skAlarm = false;						// Alarmstatus "Schrittketten-Ablaufstoerung"
 
 enum SK_TOR {STANDBY, AUTOAUF, AUTOZU, HANDAUF, HANDZU};		// ENum-Definition der SK "Torsteuerung"
 	SK_TOR schrittTor = STANDBY;			// Variable "schrittTor" dem ENum zuweisen und Variable initialisieren
+	
+const byte ADDR_GWTAG_LO = 0;				// EEPROM-Adresse: "GW-TAG" LowByte
+const byte ADDR_GWTAG_HI = 1;				// EEPROM-Adresse: "GW-TAG" HighByte
+const byte ADDR_GWNACHT_LO = 2;				// EEPROM-Adresse: "GW-NACHT" LowByte
+const byte ADDR_GWNACHT_HI = 3;				// EEPROM-Adresse: "GW-NACHT" HighByte
+const byte ADDR_MAXLIGHTTIME_LO = 4;		// EEPROM-Adresse: "EINSCHALTDAUER Licht Stall" LowByte
+const byte ADDR_MAXLIGHTTIME_HI = 5;		// EEPROM-Adresse: "EINSCHALTDAUER Licht Stall" HighByte
+const byte ADDR_DIMMLEVEL = 6;				// EEPROM-Adresse: "DIMMSTUFE Licht Stall" (0..100%, passt in 1 Byte)
+											// Naechste freie Adresse: 7
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
@@ -127,6 +137,7 @@ const char NEX_NAME_ACTDAYLIGHT[] = "n4";	// Objektname im Nextion-Projekt - Pla
 const char NEX_NAME_ACTMOTFUSE[] = "n5";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
 const char NEX_NAME_ACTBATTSTATE[] = "n6";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
 const char NEX_NAME_ACTSWITCHSTATE[] = "n7";// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+const char NEX_NAME_ACTSTATETAG[] = "n8";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
 
 enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_DIMM, HMI_REQ_MAXLIGHTTIME};
 HMI_REQUEST hmiPendingRequest = HMI_NONE;	// aktuell offene "get"-Anfrage ans HMI
@@ -260,13 +271,13 @@ void checkDebugMode()	{
 /***	FC "Remanenter Speicher auslesen"	***/
 
 void speicherRead()	{
-	byte vbTagLowbyte = EEPROM.read(0);										// LowByte "GW-TAG" lesen
-	byte vbTagHighbyte = EEPROM.read(1);									// HighByte "GW-TAG" lesen
-	byte vbNachtLowbyte = EEPROM.read(2);									// LowByte "GW-NACHT" lesen
-	byte vbNachtHighbyte = EEPROM.read(3);									// HighByte "GW-NACHT" lesen
-	byte vbLightTimeLowbyte = EEPROM.read(4);								// LowByte "EINSCHALTDAUER" lesen
-	byte vbLightTimeHighbyte = EEPROM.read(5);								// HighByte "EINSCHALTDAUER" lesen
-	byte vbDimmlevel = EEPROM.read(6);										// Byte "DIMMSTUFE 0..100%" lesen
+	byte vbTagLowbyte = EEPROM.read(ADDR_GWTAG_LO);							// LowByte "GW-TAG" lesen
+	byte vbTagHighbyte = EEPROM.read(ADDR_GWTAG_HI);						// HighByte "GW-TAG" lesen
+	byte vbNachtLowbyte = EEPROM.read(ADDR_GWNACHT_LO);						// LowByte "GW-NACHT" lesen
+	byte vbNachtHighbyte = EEPROM.read(ADDR_GWNACHT_HI);					// HighByte "GW-NACHT" lesen
+	byte vbLightTimeLowbyte = EEPROM.read(ADDR_MAXLIGHTTIME_LO);			// LowByte "EINSCHALTDAUER" lesen
+	byte vbLightTimeHighbyte = EEPROM.read(ADDR_MAXLIGHTTIME_HI);			// HighByte "EINSCHALTDAUER" lesen
+	byte vbDimmlevel = EEPROM.read(ADDR_DIMMLEVEL);							// Byte "DIMMSTUFE 0..100%" lesen
 		
 	gwValueTag = vbTagLowbyte + ((vbTagHighbyte << 8) & 0xFF00);			// Low- und HighByte "TAG" zusammenfuehren
 	gwValueNacht = vbNachtLowbyte + ((vbNachtHighbyte << 8) & 0xFF00);		// Low- und HighByte "NACHT" zusammenfuehren
@@ -301,13 +312,13 @@ void speicherWrite()	{
 	vbLightTimeHighbyte = (maxLightTime >> 8) &0xFF;						// HighByte aus "EINSCHALTDAUER" extrahieren
 	vbDimmlevel = (byte)dimmlevel;											// Wertuebergabe von INT zu BYTE
 	
-	EEPROM.update(0, vbTagLowbyte);											// GW "TAG" LowByte in Speicher schreiben
-	EEPROM.update(1, vbTagHighbyte);										// GW "TAG" HighByte in Speicher schreiben
-	EEPROM.update(2, vbNachtLowbyte);										// GW "NACHT" LowByte in Speicher schreiben
-	EEPROM.update(3, vbNachtHighbyte);										// GW "NACHT" HighByte in Speicher schreiben
-	EEPROM.update(4, vbLightTimeLowbyte);									// GW "EINSCHALTDAUER" LowByte in Speicher schreiben
-	EEPROM.update(5, vbLightTimeHighbyte);									// GW "EINSCHALTDAUER" HighByte in Speicher schreiben
-	EEPROM.update(6, vbDimmlevel);											// PWM-Dimmstufe "Licht Stall" in Speicher schreiben
+	EEPROM.update(ADDR_GWTAG_LO, vbTagLowbyte);								// GW "TAG" LowByte in Speicher schreiben
+	EEPROM.update(ADDR_GWTAG_HI, vbTagHighbyte);							// GW "TAG" HighByte in Speicher schreiben
+	EEPROM.update(ADDR_GWNACHT_LO, vbNachtLowbyte);							// GW "NACHT" LowByte in Speicher schreiben
+	EEPROM.update(ADDR_GWNACHT_HI, vbNachtHighbyte);						// GW "NACHT" HighByte in Speicher schreiben
+	EEPROM.update(ADDR_MAXLIGHTTIME_LO, vbLightTimeLowbyte);				// GW "EINSCHALTDAUER" LowByte in Speicher schreiben
+	EEPROM.update(ADDR_MAXLIGHTTIME_HI, vbLightTimeHighbyte);				// GW "EINSCHALTDAUER" HighByte in Speicher schreiben
+	EEPROM.update(ADDR_DIMMLEVEL, vbDimmlevel);								// PWM-Dimmstufe "Licht Stall" in Speicher schreiben
 return;
 }
 
@@ -385,7 +396,7 @@ void entprellen()	{
 		}
 	}
 		
-	inputs.Safety1 = vaTaster[0].xMainstate;									// Ergebnisse aus for-Schleife den spezifischen Komponenten der Struktur "inputs.xy" zuweisen
+	inputs.Safety1 = vaTaster[0].xMainstate;								// Ergebnisse aus for-Schleife den spezifischen Komponenten der Struktur "inputs.xy" zuweisen
 	inputs.Safety2 = vaTaster[1].xMainstate;
 	inputs.TstTorAuf = vaTaster[2].xMainstate;
 	inputs.TstTorZu = vaTaster[3].xMainstate;
@@ -927,8 +938,7 @@ return;
 		// WICHTIG: Diese Software-PWM funktioniert nur, solange loop() regelmaessig durchlaeuft - sie darf nicht im Sleepmode aktiv sein.
 		
 void beleuchtung()	{
-	
-	static unsigned long vulTime = 0;      									// momentane Laufzeit
+		static unsigned long vulTime = 0;      									// momentane Laufzeit
 	static bool vxState = false;      		          			    		// laufender Status
 	static bool vxOldState = false;											// vorheriger Status
 	static unsigned long pwmCycleStart = 0;									// Start der aktuellen PWM-Periode
@@ -966,31 +976,11 @@ return;
 /***	FC "Ausgangsvariablen"	***/
 
 void ausgaenge()	{
-		
-	if (outputs.MotAuf == true)												// Variable "MotAuf" dem Hardware-Ausgang zuweisen
-		digitalWrite(arrPINOut[0], HIGH);
-		else
-			digitalWrite(arrPINOut[0], LOW);
-		
-	if (outputs.MotZu == true)												// Variable "MotZu" dem Hardware-Ausgang zuweisen
-		digitalWrite(arrPINOut[1], HIGH);
-		else
-			digitalWrite(arrPINOut[1], LOW);
-		
-	if (outputs.PowOn == true)												// Variable "PowOn" dem Hardware-Ausgang zuweisen
-		digitalWrite(arrPINOut[2], HIGH);
-		else
-			digitalWrite(arrPINOut[2], LOW);
+	bool vaOutputs[anzahlPINOut] = {outputs.MotAuf, outputs.MotZu, outputs.PowOn, outputs.Licht, outputs.Alarm};	// Struct-Variable in Array uebergeben
 
-	if (outputs.Licht == true)												// Variable "Licht" dem Hardware-Ausgang zuweisen
-		digitalWrite(arrPINOut[3], HIGH);
-		else
-			digitalWrite(arrPINOut[3], LOW);
-		
-	if (outputs.Alarm == true)												// Variable "Alarm" dem Hardware-Ausgang zuweisen
-		digitalWrite(arrPINOut[4], HIGH);
-		else
-			digitalWrite(arrPINOut[4], LOW);
+	for (byte i = 0; i < anzahlPINOut; i++)	{								// for-Schlaufe mit n-Durchlaeufen fuer n-Ausgaenge
+		digitalWrite(arrPINOut[i], vaOutputs[i] ? HIGH : LOW);				// Array-Wert dem jeweiligen Hardware-Ausgang zuweisen
+	}
 return;
 }
 
@@ -1055,6 +1045,7 @@ return;
 /***	FC "Bitmaske Eingangssignale"	***/
 
 byte bitmaskSwitchState()	{
+	
 	return (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
 		 | (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
 }
@@ -1076,10 +1067,11 @@ void hmiSend()	{
 		nexSetValue(NEX_NAME_GWNACHT, gwValueNacht);
 		nexSetValue(NEX_NAME_DIMM, dimmlevel);
 		nexSetValue(NEX_NAME_MAXLIGHTTIME, maxLightTime);
-		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert
-		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);						// Rohwert
-		nexSetValue(NEX_NAME_ACTBATTSTATE, batterieProzent);				// Prozentwert
-		nexSetValue(NEX_NAME_ACTSWITCHSTATE, switchState);
+		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert Tageslicht
+		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);						// Rohwert RM Motorsicherung
+		nexSetValue(NEX_NAME_ACTBATTSTATE, batterieProzent);				// Prozentwert der Batterieladung
+		nexSetValue(NEX_NAME_ACTSWITCHSTATE, switchState);					// Schalterzustand der Inputs
+		nexSetValue(NEX_NAME_ACTSTATETAG, stateTag);						// Tag/Nacht-Status
 	}
 return;
 }
