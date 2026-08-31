@@ -1,8 +1,8 @@
 /**************************************************/
 /***	ChickenGateSystem Rev.E					***/
-/***	Step-15									***/
+/***											***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)	***/
-/***	Sensorspeisung KEIN bistabiles Relais	***/
+/***	Sensorspeisung KEINE bistabilen Relais	***/
 /***	Reset-Taster: KEINE Multifunktion mehr	***/
 /***	Parameter via Touch-HMI-Eingabefeld		***/
 /***	Software-PWM "Innenbeleuchtung Stall"	***/
@@ -67,10 +67,10 @@ struct strBLINK	{																						// Sruktur-Architektur fuer verschiedene 
 	unsigned long BattSecondOff;
 } blinktime = {800, 400, 200, 2500, 400};																// 		...Struktur-Variable fuer "blinktime" erstellen und initialisieren
 
-unsigned long prellTime = 10;   			// Entprellzeit fuer die Eingangssignale   			[in Millisekunden]
+unsigned long prellTime = 20;   			// Entprellzeit fuer die Eingangssignale   			[in Millisekunden]
 unsigned long photoTime = 60000; 		  	// Hysteresezeit der Tag/Nacht-Umschaltung   		[in Millisekunden]
-unsigned long motfuseAlaTime = 3000;		// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest
-unsigned long battAlaTime = 5000;			// Alarmverzoegerung "Batterieladung" zu tief
+unsigned long motfuseAlaTime = 2000;		// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest			[in Millisekunden]
+unsigned long battAlaTime = 5000;			// Alarmverzoegerung "Batterieladung" zu tief		[in Millisekunden]
 unsigned long relaisTime = 500;				// Relais-Ansteuerzeit für die bistabilen Relais	[in Millisekunden]
 unsigned long driveTime = 28000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
 unsigned long waitTime = 30000;				// zusaetzliche Wartezeit zur maximalen Fahrzeit vom Tor wenn ein "SafetyUp" ausgeloest wurde
@@ -86,7 +86,7 @@ int gwHystValue = 50;						// Hysteresebreite fuer Vorgabewert "TAG vs. NACHT"
 int lightvalue = 0;							// aktueller Lichtwert "Tageslicht"
 bool stateTag = true;    					// Status "Tag" beim Start auf "TRUE" initialisieren damit Tor geoeffnet wird
 
-unsigned long pwmPeriod = 10000;			// Software-PWM-Periodendauer in Mikrosekunden (100 Hz)
+unsigned long pwmPeriod = 10000;			// Software-PWM-Periodendauer						[in Microsekunden = 100 Hz]
 int dimmlevel = 100;						// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int maxLightTime = 60;						// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
@@ -135,12 +135,13 @@ const char NEX_NAME_DIMM[] = "n2";			// Objektname im Nextion-Projekt - Platzhal
 const char NEX_NAME_MAXLIGHTTIME[] = "n3";	// Objektname im Nextion-Projekt - Platzhalter
 const char NEX_NAME_ACTDAYLIGHT[] = "n4";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
 const char NEX_NAME_ACTMOTFUSE[] = "n5";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
-const char NEX_NAME_ACTBATTSTATE[] = "n6";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
-const char NEX_NAME_ACTSWITCHSTATE[] = "n7";// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+const char NEX_NAME_ACTBATTLEVEL[] = "n6";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
+const char NEX_NAME_ACTSTATESWITCH[] = "n7";// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
 const char NEX_NAME_ACTSTATETAG[] = "n8";	// Objektname im Nextion-Projekt - Platzhalter (nur Anzeige)
 
 enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_DIMM, HMI_REQ_MAXLIGHTTIME};
 HMI_REQUEST hmiPendingRequest = HMI_NONE;	// aktuell offene "get"-Anfrage ans HMI
+enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
 unsigned long hmiRequestTime = 0;			// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
 unsigned long hmiRequestTimeout = 1000;		// Timeout in ms, falls HMI nicht antwortet
 unsigned long hmiSendTime = 2000;			// Sendefrequenz "hmiSend()" in Millisekunden
@@ -161,6 +162,7 @@ void checkGwBereich();
 void checkMinMax(int &viInput, int viGwLow, int viGwHigh);
 
 /*** Nextion-HMI	***/
+byte nexErwarteteLaenge(byte cmd);
 void nexFrameAuswerten(byte* frame, byte len);
 void nexWertUebernehmen(long value);
 void nexEnde();
@@ -549,6 +551,21 @@ return 0;																	// Sicherheitsnetz, wird bei obiger Abdeckung nie erre
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
+/***	FC "UART-HMI: Telegrammlaenge bestimmen"	***/
+
+		// Liefert die gesamte Telegrammlaenge (Kommandobyte inklusive, OHNE die 3x 0xFF-Terminierung) fuer die ausgewerteten Telegrammtypen.
+		// Rueckgabe 0 = Typ wird nicht ausgewertet -> hmiRead() ueberspringt ein solches Telegramm ueber die klassische 3x-0xFF-Suche.
+		
+byte nexErwarteteLaenge(byte cmd)	{
+	switch (cmd)	{
+		case 0x65: return 4;												// Touch-Ereignis: 0x65, page, component, event
+		case 0x71: return 5;												// "get"-Antwort:  0x71 + 4 Byte int32 (little-endian)
+		default:   return 0;												// unbekannter/nicht ausgewerteter Telegrammtyp
+	}
+}
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
 /***	FC "UART-HMI: Daten empfangen"	***/
 
 		// #Nextion-Telegramme sind IMMER mit 3x 0xFF terminiert. Zwei Telegrammtypen werden ausgewertet:
@@ -556,28 +573,74 @@ return 0;																	// Sicherheitsnetz, wird bei obiger Abdeckung nie erre
 		//   0x71 <b0> <b1> <b2> <b3>				-> Rueckgabewert einer "get"-Anfrage (int32 little-endian)
 		// Ablauf: Beim Loslassen einer bekannten Eingabekomponente wird per "get compname.val" aktiv nach dem
 		// aktuellen Wert gefragt; die Antwort (0x71) wird dann dem zuvor gemerkten Parameter zugeordnet.
+		// Die Nutzlaenge wird anhand des Kommandobyte vorgegeben (nexErwarteteLaenge()),und so wird ein 0xFF-Byte innerhalb der
+		// Nutzdaten (z.B. hohe int32-Werte oder negative Zahlen in Two's-Complement) korrekt als Datenbyte
+		// uebernommen und nicht als Telegrammende gewertet. Nur nach Erreichen der erwarteten Nutzlaenge wird auf die 3x 0xFF-Terminierung geprueft. 
+		// Kommt kein 0xFF, wird von einem Protokoll-Desync ausgegangen und das Telegramm verworfen (Resync).
 
 void hmiRead()	{
-	static byte buf[16];													// Empfangspuffer fuer ein Telegramm (ohne Terminator)
-	static byte bufLen = 0;
-	static byte ffCount = 0;												// Zaehler aufeinanderfolgender 0xFF (Telegramm-Ende)
+	static byte buf[16];													// Empfangspuffer fuer ein Telegramm (Kommandobyte inklusive)
+	static byte bufLen = 0;													// Anzahl bereits empfangener Telegramm-Bytes
+	static byte erwarteteLaenge = 0;										// Erwartete Gesamtlaenge (inkl. Kommandobyte) des laufenden Telegramms
+	static byte ffCount = 0;												// Zaehler aufeinanderfolgender 0xFF (nur fuer Terminator- bzw. Resync-Erkennung)
+	static NEX_PARSE_STATE state = NEX_WAIT_CMD;							// Parser-Zustand (bleibt ueber Aufrufe hinweg erhalten)
 
 	while (Serial.available() > 0)	{										// Solange Zeichen im UART-Puffer warten...
 		byte b = Serial.read();
 
-		if (b == 0xFF)	{
-			ffCount++;
-		}else{
-			if (bufLen < sizeof(buf))	{									// Nur puffern wenn noch Platz (Schutz vor Overflow)
-				buf[bufLen++] = b;
-			}
-			ffCount = 0;
-		}
+		switch (state)	{
+			case NEX_WAIT_CMD:												// Warten auf das naechste Kommandobyte (Telegrammanfang)
+				if (b == 0xFF)	{											// ...ueberzaehlige/verirrte Terminator-Reste einfach ignorieren
+					break;
+				}
+				bufLen = 0;
+				buf[bufLen++] = b;											// ...Kommandobyte uebernehmen
+				erwarteteLaenge = nexErwarteteLaenge(b);					// ...erwartete Gesamtlaenge anhand des Kommandobytes bestimmen
+				ffCount = 0;
+				if (erwarteteLaenge > 0)	{								// Bekannter, ausgewerteter Telegrammtyp...
+					state = (bufLen < erwarteteLaenge) ? NEX_COLLECT_PAYLOAD : NEX_WAIT_TERM;
+				}else{														// ...sonst unbekannter Typ -> nur bis zum Ende ueberspringen
+					state = NEX_SKIP_UNKNOWN;
+				}
+			break;
 
-		if (ffCount >= 3)	{												// Wenn Telegramm-Ende (3x 0xFF) erkannt dann...
-			nexFrameAuswerten(buf, bufLen);									// ...Telegramm auswerten
-			bufLen = 0;														// ...Puffer fuer naechstes Telegramm zuruecksetzen
-			ffCount = 0;
+			case NEX_COLLECT_PAYLOAD:										// Nutzdaten eines bekannten Telegrammtyps sammeln
+				if (bufLen < sizeof(buf))	{								// Nur puffern wenn noch Platz (Schutz vor Overflow)
+					buf[bufLen++] = b;										// ...JEDES Byte, AUCH 0xFF, zaehlt hier als Nutzdatum (keine Terminator-Wertung!)
+				}
+				if (bufLen >= erwarteteLaenge)	{							// Wenn die erwartete Nutzlaenge erreicht ist dann...
+					state = NEX_WAIT_TERM;									// ...ab jetzt die 3x 0xFF-Terminierung erwarten
+				}
+			break;
+
+			case NEX_WAIT_TERM:											// Ab hier werden ausschliesslich die 3x 0xFF-Terminatorbytes erwartet
+				if (b == 0xFF)	{
+					ffCount++;
+					if (ffCount >= 3)	{									// Telegramm korrekt terminiert...
+						nexFrameAuswerten(buf, bufLen);						// ...auswerten
+						bufLen = 0;											// ...Puffer fuer naechstes Telegramm zuruecksetzen
+						ffCount = 0;
+						state = NEX_WAIT_CMD;
+					}
+				}else{														// Kein 0xFF wo Terminator erwartet wird -> Protokoll-Desync...
+					bufLen = 0;												// ...Telegramm verwerfen...
+					ffCount = 0;
+					state = NEX_WAIT_CMD;									// ...und mit dem naechsten Byte neu synchronisieren
+				}
+			break;
+
+			case NEX_SKIP_UNKNOWN:											// Unbekannter/nicht ausgewerteter Telegrammtyp -> klassische 3x-0xFF-Suche zum Ueberspringen
+				if (b == 0xFF)	{
+					ffCount++;
+					if (ffCount >= 3)	{									// Telegrammende gefunden -> verwerfen (keine Auswertung noetig)...
+						bufLen = 0;
+						ffCount = 0;
+						state = NEX_WAIT_CMD;								// ...und mit dem naechsten Byte neu synchronisieren
+					}
+				}else{
+					ffCount = 0;
+				}
+			break;
 		}
 	}
 
@@ -995,32 +1058,27 @@ void alarmhandling()	{
 	unsigned long vulBlinkTimeShort = 0;									// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
 	unsigned long vulBlinkTimeHalf = 0;										// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
 	unsigned long vulBlinkTimeLong = 0;										// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
-	
-// Blinktakt generieren
-	if (safetyAlarm == true)  {       						      			// Wenn Alarmstatus "Fahrfehler Tor" TRUE dann...
-		vulBlinkOn = blinktime.MainOn;										// ...Variablen fuer Blinktakt "einfach" beschreiben
-		vulBlinkOff1 = blinktime.MainOff;									// ..."dito"
-	}else if (batterieAlarm == true)	{       	           		     	// sonst wenn Alarmstatus "Batterie-Ladezustand tief" dann...
-		vulBlinkOn = blinktime.BattOn;										// ...Variablen fuer Blinktakt "doppelt" beschreiben
-		vulBlinkOff1 = blinktime.BattFirstOff;								// ..."dito"
-		vulBlinkOff2 = blinktime.BattSecondOff;								// ..."dito"
-	}
-	vulBlinkTimeShort = millis() % (vulBlinkOn + vulBlinkOff1);						// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
-	vulBlinkTimeHalf = (vulBlinkOn + vulBlinkOff1 + vulBlinkOff2);					// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
-	vulBlinkTimeLong = millis() % (vulBlinkOn+vulBlinkOn+vulBlinkOff1+vulBlinkOff2);// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
-	
+		
 // Alarm-LED blinken lassen
 	if ((skAlarm == true) || (motfuseAlarm == true))	{					// Wenn Alarmstatus "Schrittkettenablauf" oder "RM Motorsicherung" auf TRUE dann...
 		outputs.Alarm = true;												// ...Alarm-LED permanent EIN
 	}
-	else if (safetyAlarm == true) {											// Ansonsten wenn Alarm "Fahrfehler Tor" TRUE dann...
+	else if (safetyAlarm == true) {											// Sonst wenn Alarmstatus "Fahrfehler Tor" TRUE dann...
+		vulBlinkOn = blinktime.MainOn;										// ...Variablen fuer Blinktakt "einfach" beschreiben
+		vulBlinkOff1 = blinktime.MainOff;									// ..."dito"
+		vulBlinkTimeShort = millis() % (vulBlinkOn + vulBlinkOff1);			// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
 		if (vulBlinkTimeShort < vulBlinkOff1) {               				// ...Wenn "Rest" kleiner als "vulBlinkOff1" dann...
 			outputs.Alarm = false;											// 		...LED ausschalten
 		}else{                          									// ...sonst...
 		  outputs.Alarm = true;												// 		...LED einschalten
 		}
-	}else if (batterieAlarm == true) {										// Ansonsten wenn Alarm "Batterie-Ladezustand tief" TRUE dann...
-		if ((vulBlinkTimeLong < vulBlinkOff1) || ((vulBlinkTimeLong > (vulBlinkOn+vulBlinkOff1)) && (vulBlinkTimeLong < vulBlinkTimeHalf)))	{ 	// ...Wenn "Rest" kleiner als "vulBlinkOff1" ODER "Rest groesser als erste Blinksequenz" und "Rest kleiner vulBlinkTimeHalf" dann...
+	}else if (batterieAlarm == true) {										// Sonst wenn Alarmstatus "Batterie-Ladezustand tief" dann...
+		vulBlinkOn = blinktime.BattOn;										// ...Variablen fuer Blinktakt "doppelt" beschreiben
+		vulBlinkOff1 = blinktime.BattFirstOff;								// ..."dito"
+		vulBlinkOff2 = blinktime.BattSecondOff;								// ..."dito"
+		vulBlinkTimeHalf = (vulBlinkOn + vulBlinkOff1 + vulBlinkOff2);		// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
+		vulBlinkTimeLong = millis() % (vulBlinkOn+vulBlinkOn+vulBlinkOff1+vulBlinkOff2);														// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
+		if ((vulBlinkTimeLong < vulBlinkOff1) || ((vulBlinkTimeLong > (vulBlinkOn+vulBlinkOff1)) && (vulBlinkTimeLong < vulBlinkTimeHalf)))	{ 	// ...wenn "Rest" kleiner als "vulBlinkOff1" ODER "Rest groesser als erste Blinksequenz" und "Rest kleiner vulBlinkTimeHalf" dann...
 			outputs.Alarm = false;											// 		...LED ausschalten
 		}else{                          									// ...sonst...
 		  outputs.Alarm = true;												//		...LED einschalten
@@ -1032,9 +1090,9 @@ void alarmhandling()	{
 // Alarme ruecksetzen
 	if (inputs.TstReset == true)  {                   						// Wenn Taster "Reset" TRUE dann...
 		skAlarm = false;													// ...Alarmstatus "Schrittketten-Ablaufstoerung" resetieren
-		safetyAlarm = false;												// ...Alarmstatus "Fahrfehler Tor" resetieren
-		cntSafetyFail = 0;													// ....Zaehler "Fahrfehler Tor" resetieren
 		motfuseAlarm = false;												// ...Alarmstatus "Motorsicherung ausgeloest" resetieren
+		safetyAlarm = false;												// ...Alarmstatus "Fahrfehler Tor" resetieren
+		cntSafetyFail = 0;													// ...Zaehler "Fahrfehler Tor" resetieren
 		batterieAlarm = false;												// ...Alarmstatus "Batterieladung tief" resetieren								
 	}
 return;
@@ -1069,8 +1127,8 @@ void hmiSend()	{
 		nexSetValue(NEX_NAME_MAXLIGHTTIME, maxLightTime);
 		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert Tageslicht
 		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);						// Rohwert RM Motorsicherung
-		nexSetValue(NEX_NAME_ACTBATTSTATE, batterieProzent);				// Prozentwert der Batterieladung
-		nexSetValue(NEX_NAME_ACTSWITCHSTATE, switchState);					// Schalterzustand der Inputs
+		nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent);				// Prozentwert der Batterieladung
+		nexSetValue(NEX_NAME_ACTSTATESWITCH, switchState);					// Schalterzustand der Inputs
 		nexSetValue(NEX_NAME_ACTSTATETAG, stateTag);						// Tag/Nacht-Status
 	}
 return;
