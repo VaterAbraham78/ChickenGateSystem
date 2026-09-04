@@ -1,13 +1,14 @@
 /**************************************************/
 /***	ChickenGateSystem Rev.E					***/
-/***	Korrekturversion: V18					***/
+/***	Korrekturversion: V20					***/
 /***											***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)	***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaet	***/
 /***	Sensorspeisung KEINE bistabilen Relais	***/
 /***	Reset-Taster: KEINE Multifunktion mehr	***/
 /***	Parameter via Touch-HMI-Eingabefeld		***/
-/***	Software-PWM "Innenbeleuchtung Stall"	***/
+/***	HW-PWM "Innenbeleuchtung Stall"			***/
+/***	Korrektur Pinbelegung fuer Outputs		***/
 /***	UART-Kommunikation Nextion-Touchpanel	***/
 /***	UART-Kanalwechsel bei Start (Debug-Mode	***/
 /***	allgemeine Codeverbesserungen			***/
@@ -37,13 +38,13 @@ const byte INTstLicht = 7;					// Taster "Licht Stall"
 const byte INTstReset = 8;    				// Taster "Reset"
 const byte OUTMotAuf = 9;					// Motorbefehl "Tor AUF"					(bistabiles Relais mit 2 Spulen)
 const byte OUTMotZu = 10;   				// Motorbefehl "Tor ZU"						(bistabiles Relais mit 2 Spulen)
-const byte OUTPowOn = 11;  					// "Torsensoren/partielle Motorspeisung" einschalten
-const byte OUTLicht = 12;   				// Innenbeleuchtung "Licht Stall" einschalten
-const byte OUTAlarm = 13;     				// Signal-LED "Alarm"
+const byte OUTLicht = 11;   				// Innenbeleuchtung "Licht Stall" einschalten
+const byte OUTAlarm = 12;     				// Signal-LED "Alarm"
+const byte OUTPowOn = 13;  					// "Torsensoren/partielle Motorspeisung" einschalten
 
 const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstReset};		// Array "arrPINIn" definieren und initialisieren
 const byte anzahlPINIn = sizeof(arrPINIn);																// Arraygroesse "arrPINIn" bestimmen (zwingend eine Konstante)
-const byte arrPINOut[] = {OUTMotAuf, OUTMotZu, OUTPowOn, OUTLicht, OUTAlarm};							// Array "arrPINOut" definieren und initialisieren
+const byte arrPINOut[] = {OUTMotAuf, OUTMotZu, OUTAlarm, OUTPowOn};										// Array "arrPINOut" definieren und initialisieren (OUTLicht als HW-PWM, daher NICHT im Array)
 const byte anzahlPINOut = sizeof(arrPINOut);															// Arraygroesse "arrPINOut" bestimmen (zwingend eine Konstante)
 
 struct strINPUT	{																						// Struktur-Architektur fuer Eingaenge definieren
@@ -57,9 +58,9 @@ struct strINPUT	{																						// Struktur-Architektur fuer Eingaenge de
 struct strOUTPUT	{																					// Struktur-Architektur fuer Ausgaenge definieren
 	bool MotAuf;
 	bool MotZu;
-	bool PowOn;
 	bool Licht;
 	bool Alarm;
+	bool PowOn;
 }	outputs = {false, false, false, false, false};														// 		...Struktur-Variable "outputs" erstellen und initialisieren	
 struct strBLINK	{																						// Sruktur-Architektur fuer verschiedene Blinkzeiten definieren
 	unsigned long MainOn;
@@ -100,7 +101,6 @@ int lightvalue = 0;							// aktueller Lichtwert "Tageslicht"
 bool stateTag = true;    					// Status "Tag" beim Start auf "TRUE" initialisieren damit Tor geoeffnet wird
 bool debugMode = false;						// Debug-Modus bei Controllerstart auswerten		[TRUE=SerialMonitor / FALSE=Nextion-HMI]
 
-unsigned long pwmPeriod = 10000;			// Software-PWM-Periodendauer						[in Microsekunden = 100 Hz]
 int dimmlevel = DEF_DIMMLEVEL;				// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int gwLightTime = DEF_LIGHTTIME;			// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
@@ -219,9 +219,9 @@ void setup()	{
 	pinMode(INTstReset, INPUT);    			// Taster "Reset"
 	pinMode(OUTMotAuf, OUTPUT);   			// Motorbefehl "Tor AUF"					(bistabiles Relais mit 2 Spulen)
 	pinMode(OUTMotZu, OUTPUT);    			// Motorbefehl "Tor ZU"						(bistabiles Relais mit 2 Spulen)
-	pinMode(OUTPowOn, OUTPUT);				// Torsensoren/partielle Motorspeisung "einschalten"
 	pinMode(OUTLicht, OUTPUT);    			// Licht "Stall" einschalten
 	pinMode(OUTAlarm, OUTPUT);    			// Signal-LED "Alarm"
+	pinMode(OUTPowOn, OUTPUT);				// Torsensoren/partielle Motorspeisung "einschalten"
 	speicherRead();							// FC "Remanenter Speicher auslesen"
 }
 
@@ -1025,15 +1025,12 @@ return;
 /*******************************************************************************************************/
 /***	FC "Innenbeleuchtung Stall"	***/
 
-		// Licht per Software-PWM (kooperativ, ueber micros()) im Verhaeltnis "dimmlevel" (0..100%) getaktet, da Ausgabepin kein HW-PWM unterstutzt.
-		// WICHTIG: Diese Software-PWM funktioniert nur, solange loop() regelmaessig durchlaeuft - sie darf nicht im Sleepmode aktiv sein.
+		// Licht per Hardware-PWM im Verhaeltnis "dimmlevel" (0..100%) getaktet (Timer2).
 		
 void beleuchtung()	{
 	static unsigned long vulTime = 0;      									// momentane Laufzeit
 	static bool vxState = false;      		          			    		// laufender Status
 	static bool vxOldState = false;											// vorheriger Status
-	static unsigned long pwmCycleStart = 0;									// Start der aktuellen PWM-Periode
-	unsigned long pwmOnTime;												// Einschaltdauer innerhalb der Periode, gemaess Parameter
 
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
 		vulTime = millis();             									// ...permanent die Laufzeit merken
@@ -1045,20 +1042,7 @@ void beleuchtung()	{
 		vxState = false;													// ...laufender Status "vxState" auf FALSE
 	}
 	vxOldState = inputs.TstLicht;											// letzten Schaltzustand merken
-
-	if (vxState == true)	{
-			pwmOnTime = (unsigned long)dimmlevel * pwmPeriod / 100;			// Einschaltzeit aus Dimmstufe berechnen (0..pwmPeriod)
-		if (micros() - pwmCycleStart >= pwmPeriod)	{						// Wenn aktuelle Periode abgelaufen dann...
-			pwmCycleStart = micros();										// ...neue Periode starten
-		}
-		if ((micros() - pwmCycleStart) < pwmOnTime)	{						// Wenn innerhalb der Einschaltzeit dann...
-			outputs.Licht = true;											// ...Ausgang EIN
-		}else{																// sonst (innerhalb der Periode, aber nach Einschaltzeit)...
-			outputs.Licht = false;											// ...Ausgang AUS
-		}
-	} else {
-		outputs.Licht = false;
-	}
+	outputs.Licht = vxState;												// Dimmstufe (PWM-Tastgrad) wird in ausgaenge() per Hardware gesetzt
 return;
 }
 
@@ -1067,10 +1051,15 @@ return;
 /***	FC "Ausgangsvariablen"	***/
 
 void ausgaenge()	{
-	bool vaOutputs[anzahlPINOut] = {outputs.MotAuf, outputs.MotZu, outputs.PowOn, outputs.Licht, outputs.Alarm};	// Struct-Variable in Array uebergeben
+	bool vaOutputs[anzahlPINOut] = {outputs.MotAuf, outputs.MotZu, outputs.Alarm, outputs.PowOn};	// Struct-Variable in Array uebergeben
 
 	for (byte i = 0; i < anzahlPINOut; i++)	{								// for-Schlaufe mit n-Durchlaeufen fuer n-Ausgaenge
 		digitalWrite(arrPINOut[i], vaOutputs[i] ? HIGH : LOW);				// Array-Wert dem jeweiligen Hardware-Ausgang zuweisen
+	}
+	if (outputs.Licht == true)	{											// Licht "Stall": Hardware-PWM
+		analogWrite(OUTLicht, map(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL, 0, 255));	// Dimmstufe 0..100% auf PWM-Tastgrad 0..255 abbilden
+	}else{
+		analogWrite(OUTLicht, 0);
 	}
 return;
 }
