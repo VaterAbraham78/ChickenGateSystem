@@ -1,19 +1,19 @@
-/**************************************************/
-/***	ChickenGateSystem Rev.E					***/
-/***	Korrekturversion: V22					***/
-/***											***/
-/***	Interrupt vorbereitet (OHNE Sleepmode)	***/
-/***	EEPROM-Magic-Byte fuer Plausibilitaet	***/
-/***	Sensorspeisung KEINE bistabilen Relais	***/
-/***	Reset-Taster: KEINE Multifunktion mehr	***/
-/***	Parameter via Touch-HMI-Eingabefeld		***/
-/***	Tastereingabe via Touch-HMI-Button		***/
-/***	HW-PWM "Innenbeleuchtung Licht-Stall"	***/
-/***	Korrektur Pinbelegung fuer Outputs		***/
-/***	UART-Kommunikation Nextion-Touchpanel	***/
-/***	UART-Kanalwechsel bei Start (Debug-Mode)***/
-/***	allgemeine Codeverbesserungen			***/
-/**************************************************/
+/******************************************************************/
+/***	ChickenGateSystem Rev.E									***/
+/***	Korrekturversion: V23									***/
+/***															***/
+/***	Interrupt vorbereitet (OHNE Sleepmode)					***/
+/***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
+/***	Sensorspeisung KEINE bistabilen Relais mehr				***/
+/***	Reset-Taster: KEINE Multifunktion mehr					***/
+/***	Parameter via HMI-Eingabefeld							***/
+/***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button	***/
+/***	HW-PWM "Innenbeleuchtung Licht-Stall"					***/
+/***	Korrektur Pinbelegung fuer Outputs						***/
+/***	UART-Kommunikation Nextion-Touchpanel					***/
+/***	UART-Kanalwechsel bei Start (Debug-Mode)				***/
+/***	allgemeine Codeverbesserungen							***/
+/******************************************************************/
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
@@ -103,7 +103,7 @@ bool stateTag = true;    					// Status "Tag" beim Start auf "TRUE" initialisier
 bool debugMode = false;						// Debug-Modus bei Controllerstart auswerten		[TRUE=SerialMonitor / FALSE=Nextion-HMI]
 
 int dimmlevel = DEF_DIMMLEVEL;				// PWM-Dimmstufe "Licht Stall"						[0..100%]
-int gwLightTime = DEF_LIGHTTIME;			// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
+int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
 const int averageCnt = 10;					// Anzahl Zyklen fuer Mittelwertbildung
 int motfuseVolt = 0;						// aktuelle Spannung "RM Motorsicherung"
@@ -127,8 +127,8 @@ const byte ADDR_GWTAG_LO = 0;				// EEPROM-Adresse: "GW-TAG" LowByte
 const byte ADDR_GWTAG_HI = 1;				// EEPROM-Adresse: "GW-TAG" HighByte
 const byte ADDR_GWNACHT_LO = 2;				// EEPROM-Adresse: "GW-NACHT" LowByte
 const byte ADDR_GWNACHT_HI = 3;				// EEPROM-Adresse: "GW-NACHT" HighByte
-const byte ADDR_MAXLIGHTTIME_LO = 4;		// EEPROM-Adresse: "EINSCHALTDAUER Licht Stall" LowByte
-const byte ADDR_MAXLIGHTTIME_HI = 5;		// EEPROM-Adresse: "EINSCHALTDAUER Licht Stall" HighByte
+const byte ADDR_LIGHTTIME_LO = 4;			// EEPROM-Adresse: "EINSCHALTDAUER Licht Stall" LowByte
+const byte ADDR_LIGHTTIME_HI = 5;			// EEPROM-Adresse: "EINSCHALTDAUER Licht Stall" HighByte
 const byte ADDR_DIMMLEVEL = 6;				// EEPROM-Adresse: "DIMMSTUFE Licht Stall" (0..100%, passt in 1 Byte)
 const byte ADDR_EEPROM_MAGIC = 7;			// EEPROM-Adresse: Gueltigkeits-Erkennungsbyte
 const byte EEPROM_MAGIC_VALUE = 0xA5;		// Erkennungswert der Speicherstruktur
@@ -150,13 +150,13 @@ const byte NEX_PAGE_SWITCHES = 3;			// Seite "pageSwitches"
 
 const byte NEX_CID_GWTAG = 4;				// effektive Nextion-ID Eingabefeld "Grenzwert Tag"
 const byte NEX_CID_GWNACHT = 6;				// effektive Nextion-ID Eingabefeld "Grenzwert Nacht"
-const byte NEX_CID_MAXLIGHTTIME = 6;		// effektive Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
+const byte NEX_CID_LIGHTTIME = 6;			// effektive Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
 const byte NEX_CID_DIMM = 4;				// effektive Nextion-ID Eingabefeld "Dimmstufe Licht Stall"
 const byte NEX_CID_LICHTTOGGLE = 7;			// effektive Nextion-ID Eingabefeld "Button Licht Stall"
 
 const char NEX_NAME_GWTAG[] = "pageDaylight.p1_nb04";			// effektiver Objektname Eingabefeld "Grenzwert Tag"
 const char NEX_NAME_GWNACHT[] = "pageDaylight.p1_nb05";			// effektiver Objektname Eingabefeld "Grenzwert Nacht"
-const char NEX_NAME_MAXLIGHTTIME[] = "pageBoxlight.p2_nb06";	// effektiver Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
+const char NEX_NAME_LIGHTTIME[] = "pageBoxlight.p2_nb06";		// effektiver Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
 const char NEX_NAME_DIMM[] = "pageBoxlight.p2_nb04";			// effektiver Objektname Eingabefeld "Dimmstufe Licht Stall"
 
 const char NEX_NAME_ACTDAYLIGHT[] = "pageDaylight.p1_nb02";		// effektiver Objektname Anzeigefeld "Rohwert Tageslicht"
@@ -305,7 +305,7 @@ void speicherRead()	{
 		if (EEPROM.read(ADDR_EEPROM_MAGIC) != EEPROM_MAGIC_VALUE)	{		// Wenn erster Initial-Boot oder korrupte Speicherstruktur dann...
 		gwValueTag = DEF_GWVALTAG;											// ...zentrale Defaultwerte uebernehmen
 		gwValueNacht = DEF_GWVALNACHT;
-		gwLightTime = DEF_LIGHTTIME;
+		lighttime = DEF_LIGHTTIME;
 		dimmlevel = DEF_DIMMLEVEL;
 		speicherWrite();													// ...Defaultwerte remanent sichern
 		EEPROM.update(ADDR_EEPROM_MAGIC, EEPROM_MAGIC_VALUE);				// ...Magic-Byte setzen -> kuenftige Boots erkennen so gueltigen Speicher
@@ -315,16 +315,16 @@ void speicherRead()	{
 	byte vbTagHighbyte = EEPROM.read(ADDR_GWTAG_HI);						// HighByte "GW-TAG" lesen
 	byte vbNachtLowbyte = EEPROM.read(ADDR_GWNACHT_LO);						// LowByte "GW-NACHT" lesen
 	byte vbNachtHighbyte = EEPROM.read(ADDR_GWNACHT_HI);					// HighByte "GW-NACHT" lesen
-	byte vbLightTimeLowbyte = EEPROM.read(ADDR_MAXLIGHTTIME_LO);			// LowByte "EINSCHALTDAUER" lesen
-	byte vbLightTimeHighbyte = EEPROM.read(ADDR_MAXLIGHTTIME_HI);			// HighByte "EINSCHALTDAUER" lesen
+	byte vbLightTimeLowbyte = EEPROM.read(ADDR_LIGHTTIME_LO);				// LowByte "EINSCHALTDAUER" lesen
+	byte vbLightTimeHighbyte = EEPROM.read(ADDR_LIGHTTIME_HI);				// HighByte "EINSCHALTDAUER" lesen
 	byte vbDimmlevel = EEPROM.read(ADDR_DIMMLEVEL);							// Byte "DIMMSTUFE 0..100%" lesen
 		
 	gwValueTag = vbTagLowbyte + ((vbTagHighbyte << 8) & 0xFF00);			// Low- und HighByte "TAG" zusammenfuehren
 	gwValueNacht = vbNachtLowbyte + ((vbNachtHighbyte << 8) & 0xFF00);		// Low- und HighByte "NACHT" zusammenfuehren
 	checkGwBereich();														// Grenzwertvorgabe in FC pruefen
 	
-	gwLightTime = vbLightTimeLowbyte + ((vbLightTimeHighbyte << 8) & 0xFF00);	// Low- und HighByte "EINSCHALTDAUER LICHT STALL" zusammenfuehren
-	checkMinMax(gwLightTime, MIN_LIGHTTIME, MAX_LIGHTTIME);					// "EINSCHALTDAUER Licht Stall" -> Min/Max-Begrenzung in Sekunden
+	lighttime = vbLightTimeLowbyte + ((vbLightTimeHighbyte << 8) & 0xFF00);	// Low- und HighByte "EINSCHALTDAUER LICHT STALL" zusammenfuehren
+	checkMinMax(lighttime, MIN_LIGHTTIME, MAX_LIGHTTIME);					// "EINSCHALTDAUER Licht Stall" -> Min/Max-Begrenzung in Sekunden
 	
 	dimmlevel = vbDimmlevel;
 	checkMinMax(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL);					// "DIMMSTUFE Licht Stall" -> Min/Max-Begrenzung in Prozent
@@ -348,16 +348,16 @@ void speicherWrite()	{
 	vbTagHighbyte = (gwValueTag >> 8) &0xFF;								// HighByte aus "GW-TAG" extrahieren
 	vbNachtLowbyte = gwValueNacht &0xFF;									// LowByte aus "GW-NACHT" extrahieren
 	vbNachtHighbyte = (gwValueNacht >> 8) &0xFF;							// HighByte aus "GW-NACHT" extrahieren
-	vbLightTimeLowbyte = gwLightTime &0xFF;									// LowByte aus "EINSCHALTDAUER" extrahieren
-	vbLightTimeHighbyte = (gwLightTime >> 8) &0xFF;							// HighByte aus "EINSCHALTDAUER" extrahieren
+	vbLightTimeLowbyte = lighttime &0xFF;									// LowByte aus "EINSCHALTDAUER" extrahieren
+	vbLightTimeHighbyte = (lighttime >> 8) &0xFF;							// HighByte aus "EINSCHALTDAUER" extrahieren
 	vbDimmlevel = (byte)dimmlevel;											// Wertuebergabe von INT zu BYTE
 	
 	EEPROM.update(ADDR_GWTAG_LO, vbTagLowbyte);								// GW "TAG" LowByte in Speicher schreiben
 	EEPROM.update(ADDR_GWTAG_HI, vbTagHighbyte);							// GW "TAG" HighByte in Speicher schreiben
 	EEPROM.update(ADDR_GWNACHT_LO, vbNachtLowbyte);							// GW "NACHT" LowByte in Speicher schreiben
 	EEPROM.update(ADDR_GWNACHT_HI, vbNachtHighbyte);						// GW "NACHT" HighByte in Speicher schreiben
-	EEPROM.update(ADDR_MAXLIGHTTIME_LO, vbLightTimeLowbyte);				// GW "EINSCHALTDAUER" LowByte in Speicher schreiben
-	EEPROM.update(ADDR_MAXLIGHTTIME_HI, vbLightTimeHighbyte);				// GW "EINSCHALTDAUER" HighByte in Speicher schreiben
+	EEPROM.update(ADDR_LIGHTTIME_LO, vbLightTimeLowbyte);					// "EINSCHALTDAUER" LowByte in Speicher schreiben
+	EEPROM.update(ADDR_LIGHTTIME_HI, vbLightTimeHighbyte);					// "EINSCHALTDAUER" HighByte in Speicher schreiben
 	EEPROM.update(ADDR_DIMMLEVEL, vbDimmlevel);								// PWM-Dimmstufe "Licht Stall" in Speicher schreiben
 return;
 }
@@ -653,7 +653,7 @@ void hmiRead()	{
 				}
 			break;
 
-			case NEX_WAIT_TERM:											// Ab hier werden ausschliesslich die 3x 0xFF-Terminatorbytes erwartet
+			case NEX_WAIT_TERM:												// Ab hier werden ausschliesslich die 3x 0xFF-Terminatorbytes erwartet
 				if (b == 0xFF)	{
 					ffCount++;
 					if (ffCount >= 3)	{									// Telegramm korrekt terminiert...
@@ -709,7 +709,7 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 
 			if ((pageId == NEX_PAGE_DAYLIGHT) && (compId == NEX_CID_GWTAG))				{ req = HMI_REQ_GWTAG;			name = NEX_NAME_GWTAG;	}
 			else if ((pageId == NEX_PAGE_DAYLIGHT) && (compId == NEX_CID_GWNACHT))		{ req = HMI_REQ_GWNACHT;		name = NEX_NAME_GWNACHT;	}
-			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_MAXLIGHTTIME))	{ req = HMI_REQ_MAXLIGHTTIME;	name = NEX_NAME_MAXLIGHTTIME;	}
+			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_LIGHTTIME))	{ req = HMI_REQ_MAXLIGHTTIME;	name = NEX_NAME_LIGHTTIME;	}
 			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_DIMM))			{ req = HMI_REQ_DIMM;			name = NEX_NAME_DIMM;	}
 			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_LICHTTOGGLE))	{
 				hmiLichtToggleRequest = true;
@@ -756,10 +756,10 @@ void nexWertUebernehmen(long value)	{
 			}
 		} break;
 		case HMI_REQ_MAXLIGHTTIME:	{
-			int vorher = gwLightTime;
-			gwLightTime = neuerWert;
-			checkMinMax(gwLightTime, MIN_LIGHTTIME, MAX_LIGHTTIME);
-			if (gwLightTime != vorher)	{
+			int vorher = lighttime;
+			lighttime = neuerWert;
+			checkMinMax(lighttime, MIN_LIGHTTIME, MAX_LIGHTTIME);
+			if (lighttime != vorher)	{
 				speicherWrite();
 			}
 		} break;
@@ -774,7 +774,7 @@ void nexWertUebernehmen(long value)	{
 		default:
 		break;
 	}
-	hmiPendingRequest = HMI_NONE;												// Anfrage abgeschlossen
+	hmiPendingRequest = HMI_NONE;											// Anfrage abgeschlossen
 return;
 }
 
@@ -1055,8 +1055,8 @@ void beleuchtung()	{
 	if (((inputs.TstLicht == true) && (vxOldState == false)) || (hmiLichtToggleRequest == true))	{				// Wenn Taster mit positiver Flanke gedrueckt ODER HMI-Taster dann...
 		vxState = !vxState;													// ... wenn Zustand vorher AUS war, dann invertieren
 	}
-	hmiLichtToggleRequest = false;										// HMI-Anforderung nach Verarbeitung immer zuruecksetzen		
-	if ((millis() - vulTime > ((unsigned long)gwLightTime*1000uL)))	{		// Wenn maximale Einschaltdauer erreicht dann...	
+	hmiLichtToggleRequest = false;											// HMI-Anforderung nach Verarbeitung immer zuruecksetzen		
+	if ((millis() - vulTime > ((unsigned long)lighttime*1000uL)))	{		// Wenn maximale Einschaltdauer erreicht dann...	
 		vxState = false;													// ...laufender Status "vxState" auf FALSE
 	}
 	vxOldState = inputs.TstLicht;											// letzten Schaltzustand merken
@@ -1158,7 +1158,7 @@ void hmiSend()	{
 					
 		nexSetValue(NEX_NAME_GWTAG, gwValueTag);
 		nexSetValue(NEX_NAME_GWNACHT, gwValueNacht);
-		nexSetValue(NEX_NAME_MAXLIGHTTIME, gwLightTime);
+		nexSetValue(NEX_NAME_LIGHTTIME, lighttime);
 		nexSetValue(NEX_NAME_DIMM, dimmlevel);
 		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert Tageslicht
 		nexSetValue(NEX_NAME_ACTSTATETAG, stateTag);						// Tag/Nacht-Status
@@ -1190,7 +1190,7 @@ void displayanzeige()	{
 		Serial.print(gwValueNacht);
 		Serial.println();
 		Serial.print("Einschaltdauer Licht-Stall: ");						// ...Anzeige maximale Einschaltzeit "Licht Stall"
-		Serial.print(gwLightTime);
+		Serial.print(lighttime);
 		Serial.print(" Sek.   ");
 		Serial.print("Dimmstufe Licht-Stall: ");							// ...Anzeige PWM-Dimmstufe "Licht Stall"
 		Serial.print(dimmlevel);
@@ -1218,21 +1218,34 @@ void displayanzeige()	{
 			Serial.print(bitRead(switchState, i));	}
 		Serial.print("  [Safety1=");
 		Serial.print(inputs.Safety1);
-		Serial.print(" Safety2=");
+		Serial.print("  Safety2=");
 		Serial.print(inputs.Safety2);
-		Serial.print(" TorAuf=");
+		Serial.print("  TorAuf=");
 		Serial.print(inputs.TstTorAuf);
-		Serial.print(" TorZu=");
+		Serial.print("  TorZu=");
 		Serial.print(inputs.TstTorZu);
-		Serial.print(" Licht=");
+		Serial.print("  Licht=");
 		Serial.print(inputs.TstLicht);
-		Serial.print(" Reset=");
+		Serial.print("  Reset=");
 		Serial.print(inputs.TstReset);
+		Serial.println("]");
+		
+		Serial.print("Ausgangszustand: ");
+		Serial.print(" [MotAuf=");
+		Serial.print(outputs.MotAuf);
+		Serial.print("  MotZu=");
+		Serial.print(outputs.MotZu);
+		Serial.print("  Licht=");
+		Serial.print(outputs.Licht);
+		Serial.print("  Alarm=");
+		Serial.print(outputs.Alarm);
+		Serial.print("  PowOn=");
+		Serial.print(outputs.PowOn);
 		Serial.println("]");
 		
 		Serial.print("Zykluszeit: ");                       				// ...Anzeige der aktuellen Zykluszeit
 		Serial.print(cycleTime);
-		Serial.println(" Microsekunden.");
+		Serial.println(" Microsekunden");
 		Serial.println("");
 	}
 return;
