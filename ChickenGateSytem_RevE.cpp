@@ -1,6 +1,6 @@
 /******************************************************************/
 /***	ChickenGateSystem Rev.E									***/
-/***	Korrekturversion: V24									***/
+/***	Korrekturversion: V25									***/
 /***															***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)					***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
@@ -162,6 +162,7 @@ const char NEX_NAME_DIMM[] = "pageBoxlight.p2_nb04";			// effektiver Objektname 
 const char NEX_NAME_ACTDAYLIGHT[] = "pageDaylight.p1_nb02";		// effektiver Objektname Anzeigefeld "Rohwert Tageslicht"
 const char NEX_NAME_ACTSTATETAG[] = "pageDaylight.vaStateTag";	// effektiver Name der Hilfsvariable "Tag/Nacht-Status"
 const char NEX_NAME_ACTMOTFUSE[] = "pageMain.p0_nb06";			// effektiver Objektname Anzeigefeld "Rohwert RM Motorsicherung"
+const char NEX_NAME_ACTMOTFUSEALARM[] = "pageMain.vaMotfuseAlarm";	// effektiver Name der Hilfsvariable "Alarmstatus RM Motorsicherung"
 const char NEX_NAME_ACTBATTVOLT[] = "pageMain.p0_nb03";			// effektiver Objektname Anzeigefeld "Rohwert Batteriespannung"
 const char NEX_NAME_ACTBATTLEVEL[] = "pageMain.p0_nb04";		// effektiver Objektname Anzeigefeld "Prozentwert der Batterieladung"
 const char NEX_NAME_ACTSTATESWITCH[] = "pageSwitches.vaSwitch";	// effektiver Name der Hilfsvariable "Schalterzustand der Inputs"
@@ -1164,6 +1165,7 @@ void hmiSend()	{
 		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert Tageslicht
 		nexSetValue(NEX_NAME_ACTSTATETAG, stateTag);						// Tag/Nacht-Status
 		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);						// Rohwert RM Motorsicherung
+		nexSetValue(NEX_NAME_ACTMOTFUSEALARM, motfuseAlarm);				// Alarmstatus RM Motorsicherung
 		nexSetValue(NEX_NAME_ACTBATTVOLT, batterieVolt);					// Rohwert der Batteriespannung
 		nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent);				// Prozentwert der Batterieladung
 		nexSetValue(NEX_NAME_ACTSTATESWITCH, switchState);					// Schalterzustand der Inputs
