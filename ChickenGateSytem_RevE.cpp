@@ -1,6 +1,6 @@
 /******************************************************************/
-/***	ChickenGateSystem Rev.E									***/
-/***	Korrekturversion: V26									***/
+/***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
+/***	Korrekturversion: V27		- im Code nachtragen		***/
 /***															***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)					***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
@@ -22,7 +22,6 @@
 /***	Analogcomperator zwischen den Auslesezyklen ausschalten										***/
 /***	Auslesefreqeuenz Analogssignale senken (Zeitkritisch mit Messstrom und Ladekondensator		***/
 /***	Sleepfunktion umsetzen																		***/
-/***	Revisionsstand an HMI senden																***/
 /***	Alarmstaten an HMI senden																	***/
 /***
 /******************************************************************************************************/
@@ -155,10 +154,10 @@ unsigned long debugStepTime = displayTime / debugAnzahlZeilen;		// Zeitabstand j
 		// WICHTIG: Component-IDs werden vom Nextion-Editor pro Seite ab 0 automatisch vergeben und koennen seitenuebergreifend identisch sein...
 		// ...die Auswertung in nexFrameAuswerten() prueft deshalb IMMER Seite UND ID gemeinsam!
 		
-const byte NEX_PAGE_MAIN = 0;				// Seite "pageMain"
-const byte NEX_PAGE_DAYLIGHT = 1;			// Seite "pageDaylight"
-const byte NEX_PAGE_BOXLIGHT = 2;			// Seite "pageBoxlight"
-const byte NEX_PAGE_SWITCHES = 3;			// Seite "pageSwitches"
+const byte NEX_PAGE_MAIN = 0;				// Seite "pMain"
+const byte NEX_PAGE_DAYLIGHT = 1;			// Seite "pDaylight"
+const byte NEX_PAGE_BOXLIGHT = 2;			// Seite "pBoxlight"
+const byte NEX_PAGE_SWITCHES = 3;			// Seite "pSwitches"
 
 const byte NEX_CID_GWTAG = 4;				// Nextion-ID Eingabefeld "Grenzwert Tag"
 const byte NEX_CID_GWNACHT = 6;				// Nextion-ID Eingabefeld "Grenzwert Nacht"
@@ -166,22 +165,25 @@ const byte NEX_CID_LIGHTTIME = 6;			// Nextion-ID Eingabefeld "max.Einschaltdaue
 const byte NEX_CID_DIMM = 4;				// Nextion-ID Eingabefeld "Dimmstufe Licht Stall"
 const byte NEX_CID_LICHTTOGGLE = 7;			// Nextion-ID Eingabefeld "Button Licht Stall"
 
-const char NEX_NAME_GWTAG[] = "pageDaylight.p1_nb04";			// Objektname Eingabefeld "Grenzwert Tag"
-const char NEX_NAME_GWNACHT[] = "pageDaylight.p1_nb05";			// Objektname Eingabefeld "Grenzwert Nacht"
-const char NEX_NAME_LIGHTTIME[] = "pageBoxlight.p2_nb06";		// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
-const char NEX_NAME_DIMM[] = "pageBoxlight.p2_nb04";			// Objektname Eingabefeld "Dimmstufe Licht Stall"
+const char NEX_NAME_GWTAG[] = "pDaylight.nb104";				// Objektname Eingabefeld "Grenzwert Tag"
+const char NEX_NAME_GWNACHT[] = "pDaylight.nb105";				// Objektname Eingabefeld "Grenzwert Nacht"
+const char NEX_NAME_LIGHTTIME[] = "pBoxlight.nb206";			// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
+const char NEX_NAME_DIMM[] = "pBoxlight.nb204";					// Objektname Eingabefeld "Dimmstufe Licht Stall"
 
-const char NEX_NAME_ACTDAYLIGHT[] = "pageDaylight.p1_nb02";		// Objektname Anzeigefeld "Rohwert Tageslicht"
-const char NEX_NAME_ACTSTATETAG[] = "pageDaylight.vaStateTag";	// Name der Hilfsvariable "Tag/Nacht-Status"
-const char NEX_NAME_ACTMOTFUSE[] = "pageMain.p0_nb06";			// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
-const char NEX_NAME_ACTMOTFUSEALARM[] = "pageMain.vaMotfuseAlarm";	// Name der Hilfsvariable "Alarmstatus RM Motorsicherung"
-const char NEX_NAME_ACTBATTRAW[] = "pageMain.p0_nb03";			// Objektname Anzeigefeld "Rohwert "Batterieladung"
-const char NEX_NAME_ACTBATTLEVEL[] = "pageMain.p0_nb04";		// Objektname Anzeigefeld "Prozentwert der Batterieladung"
-const char NEX_NAME_ACTSTATEINPUT[] = "pageSwitches.vaSwitch";	// Name der Hilfsvariable "Signalzustand der Inputs"
-const char NEX_NAME_ACTSTATELICHT[] = "pageBoxlight.vaLicht";	// Name der Hilfsvariable "Ausgangszustand Licht Stall"
-const char NEX_NAME_ACTCYCLETIME[] = "pageDaylight.p1_nb07";	// Objektname Anzeigefeld "Zykluszeit der CPU"
+const char NEX_NAME_ACTDAYLIGHT[] = "pDaylight.nb103";			// Objektname Anzeigefeld "Rohwert Tageslicht"
+const char NEX_NAME_ACTSTATETAG[] = "pDaylight.vaStateTag";		// Name der Hilfsvariable "Tag/Nacht-Status"
+const char NEX_NAME_ACTMOTFUSE[] = "pMain.nb006";				// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
+const char NEX_NAME_ACTMOTFUSEALARM[] = "pMain.vaMotfuseAlarm";	// Name der Hilfsvariable "Alarmstatus RM Motorsicherung"
+const char NEX_NAME_ACTBATTRAW[] = "pMain.nb003";				// Objektname Anzeigefeld "Rohwert "Batterieladung"
+const char NEX_NAME_ACTBATTLEVEL[] = "pMain.nb004";				// Objektname Anzeigefeld "Prozentwert der Batterieladung"
+const char NEX_NAME_ACTSTATEINPUT[] = "pSwitches.vaSwitch";		// Name der Hilfsvariable "Signalzustand der Inputs"
+const char NEX_NAME_ACTSTATELICHT[] = "pBoxlight.vaLicht";		// Name der Hilfsvariable "Ausgangszustand Licht Stall"
+const char NEX_NAME_ACTCYCLETIME[] = "pDaylight.nb107";			// Objektname Anzeigefeld "Zykluszeit der CPU"
+const char NEX_NAME_ACTREVISION[] = "pMain.t001";				// Name der Hilfsvariable "Revisionsbezeichnung" (z.B. "F05")
 
-const byte hmiAnzahlWerte = 13;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
+const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
+const byte REVISION_CODE = 27;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte hmiAnzahlWerte = 14;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
 
 enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_MAXLIGHTTIME, HMI_REQ_DIMM};
 HMI_REQUEST hmiPendingRequest = HMI_NONE;						// aktuell offene "get"-Anfrage ans HMI
@@ -214,6 +216,7 @@ void nexWertUebernehmen(long value);
 void nexEnde();
 void nexGetValue(const char* compName);
 void nexSetValue(const char* compName, long value);
+void nexSetText(const char* compName, const char* text);
 
 /*** loop-Ablauf	***/
 void entprellen();
@@ -822,6 +825,15 @@ void nexSetValue(const char* compName, long value)	{						// "<component>.val=<v
 return;
 }
 
+void nexSetText(const char* compName, const char* text)	{					// "<component>.txt=\"<text>\"" absenden
+	Serial.print(compName);
+	Serial.print(".txt=\"");
+	Serial.print(text);
+	Serial.print("\"");
+	nexEnde();
+return;
+}
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Torsteuerung"	***/
@@ -1194,6 +1206,12 @@ void hmiSend()	{
 			case 10:  nexSetValue(NEX_NAME_ACTSTATEINPUT, vbStateInputs); break;	// Schalterzustand der Inputs (Bitmaske)
 			case 11: nexSetValue(NEX_NAME_ACTSTATELICHT, outputs.Licht); break;		// Ausgangszustand Licht Stall
 			case 12: nexSetValue(NEX_NAME_ACTCYCLETIME, (long)cycleTime); break;	// Zykluszeit der CPU
+			case 13:	{															// Revisionsbezeichnung, z.B. "F05"
+				char revisionText[4];												// 1 Buchstabe + 2 Ziffern + Nullterminierung
+				revisionText[0] = REVISION_SCHEMA;
+				snprintf(&revisionText[1], sizeof(revisionText) - 1, "%02u", REVISION_CODE);	// %02u = immer 2-stellig, fuehrende Null
+				nexSetText(NEX_NAME_ACTREVISION, revisionText);
+			} break;
 		}
 		hmiSendIndex++;
 		if (hmiSendIndex >= hmiAnzahlWerte)	{
@@ -1218,53 +1236,53 @@ void displayanzeige()	{
 	if (millis() - vulTime >= debugStepTime) {								// Wenn "laufende Displayzeit" groesser Anzeigefrequenz dann...
 		vulTime = millis();													// ...laufende Displayzeit aktualisieren
 		
-		switch (debugSendIndex)	{											/***CHANGE - neu ***/
+		switch (debugSendIndex)	{
 			case 0:	{
-				Serial.print("Grenzwert Tag: ");									// ...Anzeige GW Tag
+				Serial.print("Grenzwert Tag: ");							// ...Anzeige GW Tag
 				Serial.print(gwValueTag);
 				Serial.print("     ");
-				Serial.print("Grenzwert Nacht: ");									// ...Anzeige GW Nacht
+				Serial.print("Grenzwert Nacht: ");							// ...Anzeige GW Nacht
 				Serial.print(gwValueNacht);
 				Serial.println();
 			} break;
 			case 1:	{
-				Serial.print("Licht-Stall Einschaltdauer: ");						// ...Anzeige maximale Einschaltzeit "Licht Stall"
+				Serial.print("Licht-Stall Einschaltdauer: ");				// ...Anzeige max.Einschaltzeit "Licht Stall"
 				Serial.print(lighttime);
 				Serial.print(" Sek.     ");
-				Serial.print("Dimmstufe: ");										// ...Anzeige PWM-Dimmstufe "Licht Stall"
+				Serial.print("Dimmstufe: ");								// ...Anzeige PWM-Dimmstufe "Licht Stall"
 				Serial.print(dimmlevel);
 				Serial.print(" %");
 				Serial.println();
 			} break;
 			case 2:	{
-				Serial.print("Helligkeit: ");										// ...Anzeige aktueller Lichtwert "Tageslicht" als Rohwert
+				Serial.print("Helligkeit: ");								// ...Anzeige Rohwert aktueller Lichtwert "Tageslicht"
 				Serial.print(lightvalue);
 				Serial.print("     ");
-				Serial.print("Tagesstatus: ");										// ...Anzeige Status "Tag"
+				Serial.print("Tagesstatus: ");								// ...Anzeige Status "Tag"
 				Serial.print(stateTag ? "Tag" : "Nacht");
 				Serial.println();
 			} break;
 			case 3:	{
-				Serial.print("Spg.Motorsicherung: ");								// ...Anzeige Messung Sicherungsspannung "RM Motorsicherung" als Rohwert
+				Serial.print("Spg.Motorsicherung: ");						// ...Anzeige Rohwert Messung "RM Motorsicherung"
 				Serial.print(motfuseRaw);
 				Serial.println();
 				} break;
 			case 4:	{
-				Serial.print("Batterieladung: ");									// ...Anzeige Messung Batterieladung als Rohwert
+				Serial.print("Batterieladung: ");							// ...Anzeige Rohwert Messung Batterieladung
 				Serial.print(batterieRaw);
 				Serial.print(" (");
-				Serial.print(batterieProzent);										// ...Anzeige Messung Batterieladung in Prozent
+				Serial.print(batterieProzent);								// ...Anzeige Prozentwert Batterieladung
 				Serial.println(" %)");
 			} break;
 			case 5:	{
 				vbStateInputs = bitmaskStateInputs();								
-				Serial.print("Schalterzustand (Bitmaske wie HMI): ");				// ...Anzeige der entprellten Eingangssignale
+				Serial.print("Schalterzustand (Bitmaske wie HMI): ");		// ...Anzeige der entprellten Eingangssignale als Bitmaske
 				for (byte i=0; i < anzahlPINIn; i++)	{
 					Serial.print(bitRead(vbStateInputs, i));	}
 				Serial.println();
 			} break;
 			case 6:	{
-				Serial.print("  [Safety1=");
+				Serial.print("  [Safety1=");								// ...Anzeige der entprellten Eingangssignale
 				Serial.print(inputs.Safety1);
 				Serial.print("  Safety2=");
 				Serial.print(inputs.Safety2);
@@ -1279,7 +1297,7 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 7:	{
-				Serial.print("Ausgaenge:");									// ...Anzeige der aktuellen Ausgaenge
+				Serial.print("Ausgaenge:");									// ...Anzeige der aktuellen Ausgangssignale
 				Serial.print("  [MotAuf=");
 				Serial.print(outputs.MotAuf);
 				Serial.print("  MotZu=");
@@ -1293,16 +1311,16 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 8:	{
-				Serial.print("Zykluszeit: ");                       				// ...Anzeige der aktuellen Zykluszeit
+				Serial.print("Zykluszeit: ");                       		// ...Anzeige der aktuellen Zykluszeit
 				Serial.print(cycleTime);
 				Serial.println(" Microsekunden");
 				Serial.println("");
 			} break;
 		}
 		
-		debugSendIndex++;														/***CHANGE - neu ***/
-		if (debugSendIndex >= debugAnzahlZeilen)	{							/***CHANGE - neu ***/
-			debugSendIndex = 0;												// nach der letzten Zeile wieder von vorne					/***CHANGE - neu ***/
+		debugSendIndex++;
+		if (debugSendIndex >= debugAnzahlZeilen)	{
+			debugSendIndex = 0;												// nach der letzten Zeile wieder von vorne
 		}
 	}
 return;
