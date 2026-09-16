@@ -1,28 +1,38 @@
 /******************************************************************/
 /***	ChickenGateSystem Rev.E									***/
-/***	Korrekturversion: V25									***/
+/***	Korrekturversion: V26									***/
 /***															***/
 /***	Interrupt vorbereitet (OHNE Sleepmode)					***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
 /***	Sensorspeisung KEINE bistabilen Relais mehr				***/
-/***	Reset-Taster: KEINE Multifunktion mehr					***/
-/***	Parameter via HMI-Eingabefeld							***/
+/***	Reset-Taster: KEINE Mehrfachfunktion mehr vorhanden		***/
+/***	Parameter und GW via HMI-Eingabefelder					***/
+/***	Statusmeldungen via HMI-Anzeigefelder					***/
 /***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button	***/
-/***	HW-PWM "Innenbeleuchtung Licht-Stall"					***/
-/***	Korrektur Pinbelegung fuer Outputs						***/
-/***	UART-Kommunikation Nextion-Touchpanel					***/
-/***	UART-Kanalwechsel bei Start (Debug-Mode)				***/
+/***	HW-PWM "Innenbeleuchtung Licht-Stall" umgesetzt			***/
+/***	Korrektur Pinbelegung fuer Outputs (HW-PWM)				***/
+/***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
+/***	UART-Kanalwechsel (Debug-Mode serielle Ausgabe)			***/
 /***	allgemeine Codeverbesserungen							***/
 /******************************************************************/
-
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/***																								***/
+/***	OFFENE CODEIMPLEMENTIERUNGEN																***/
+/***																								***/
+/***	Analogcomperator zwischen den Auslesezyklen ausschalten										***/
+/***	Auslesefreqeuenz Analogssignale senken (Zeitkritisch mit Messstrom und Ladekondensator		***/
+/***	Sleepfunktion umsetzen																		***/
+/***	Revisionsstand an HMI senden																***/
+/***	Alarmstaten an HMI senden																	***/
+/***
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	BIBLIOTHEKEN	***/
 
 #include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der HMI-Eingabeparameter
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	DEKLARATIONEN	***/
 
 const byte INADaylight = A0;   				// Analogwert Messung "Tageslicht"			-> Integerwert 0..1024
@@ -90,10 +100,7 @@ const int DEF_DIMMLEVEL = 50;				// Default PWM-Dimmstufe	[50%]
 const int MIN_LIGHTTIME = 1;				// min. Einschaltdauer		[1 Sekunden]
 const int MAX_LIGHTTIME = 1800;				// max. Einschaltdauer		[1800 Sekunden]
 const int DEF_LIGHTTIME = 10;				// Default Einschaltdauer	[10 Sekunden]
-
-unsigned long displayTime = 1000;			// Display-Anzeigefrequenz							[in Millisekunden]
-unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
-
+											
 int gwValueNacht = DEF_GWVALNACHT;			// HMI-Grenzwertvorgabe fuer Helligkeit "NACHT"
 int gwValueTag = DEF_GWVALTAG;  			// HMI-Grenzwertvorgabe fuer Helligkeit "TAG"
 int gwHystValue = 50;						// Hysteresebreite fuer Tag/Nacht-Umschaltung
@@ -106,11 +113,11 @@ int dimmlevel = DEF_DIMMLEVEL;				// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
 const int averageCnt = 10;					// Anzahl Zyklen fuer Mittelwertbildung
-int motfuseVolt = 0;						// aktuelle Spannung "RM Motorsicherung"
-int gwMotfuseVolt = 546;					// Grenzwert "RM Motorsicherung"					[546=8.00V=Sicherung ausgeloest]
-int batterieVolt = 0;						// aktuelle Batteriewert
-int batterieProzent = 0;					// aktuelle Batterieladung in Prozent				[SOC, aus "batterieVolt" abgeleitet]
-int gwBatterieVolt = 810;					// Grenzwert "Batteriespannung tief"				[810=11.85V=30%]
+int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
+int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
+int batterieRaw = 0;						// aktueller Rohwert "Batterieladung"
+int gwBatterieRaw = 810;					// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
+int batterieProzent = 0;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
 
 int cntSafetyFail = 0;						// laufender Zaehler "Fahrfehler Tor"
 int gwSafetyFail = 3;						// Grenzwert Anzahl erlaubter "Fahrfehler Tor" bis Alarm ausgeloest wird
@@ -133,9 +140,14 @@ const byte ADDR_DIMMLEVEL = 6;				// EEPROM-Adresse: "DIMMSTUFE Licht Stall" (0.
 const byte ADDR_EEPROM_MAGIC = 7;			// EEPROM-Adresse: Gueltigkeits-Erkennungsbyte
 const byte EEPROM_MAGIC_VALUE = 0xA5;		// Erkennungswert der Speicherstruktur
 											// Naechste freie Adresse: 8
+											
+unsigned long displayTime = 1000;			// Display-Anzeigefrequenz							[in Millisekunden]
+unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
+const byte debugAnzahlZeilen = 9;			// Anzahl Debug-Zeilen insgesamt (fuer Round-Robin-Funktion)
+unsigned long debugStepTime = displayTime / debugAnzahlZeilen;		// Zeitabstand je Einzelzeile um Serial-Blockade zu verhindern
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	NEXTION-TOUCHDISPLAY	***/
 
 		// component-ID (byte, bei Touch-Events zurueckgemeldet) und component-Name (String, fuer "get"/"set"-Textbefehle)... 
@@ -148,26 +160,28 @@ const byte NEX_PAGE_DAYLIGHT = 1;			// Seite "pageDaylight"
 const byte NEX_PAGE_BOXLIGHT = 2;			// Seite "pageBoxlight"
 const byte NEX_PAGE_SWITCHES = 3;			// Seite "pageSwitches"
 
-const byte NEX_CID_GWTAG = 4;				// effektive Nextion-ID Eingabefeld "Grenzwert Tag"
-const byte NEX_CID_GWNACHT = 6;				// effektive Nextion-ID Eingabefeld "Grenzwert Nacht"
-const byte NEX_CID_LIGHTTIME = 6;			// effektive Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
-const byte NEX_CID_DIMM = 4;				// effektive Nextion-ID Eingabefeld "Dimmstufe Licht Stall"
-const byte NEX_CID_LICHTTOGGLE = 7;			// effektive Nextion-ID Eingabefeld "Button Licht Stall"
+const byte NEX_CID_GWTAG = 4;				// Nextion-ID Eingabefeld "Grenzwert Tag"
+const byte NEX_CID_GWNACHT = 6;				// Nextion-ID Eingabefeld "Grenzwert Nacht"
+const byte NEX_CID_LIGHTTIME = 6;			// Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
+const byte NEX_CID_DIMM = 4;				// Nextion-ID Eingabefeld "Dimmstufe Licht Stall"
+const byte NEX_CID_LICHTTOGGLE = 7;			// Nextion-ID Eingabefeld "Button Licht Stall"
 
-const char NEX_NAME_GWTAG[] = "pageDaylight.p1_nb04";			// effektiver Objektname Eingabefeld "Grenzwert Tag"
-const char NEX_NAME_GWNACHT[] = "pageDaylight.p1_nb05";			// effektiver Objektname Eingabefeld "Grenzwert Nacht"
-const char NEX_NAME_LIGHTTIME[] = "pageBoxlight.p2_nb06";		// effektiver Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
-const char NEX_NAME_DIMM[] = "pageBoxlight.p2_nb04";			// effektiver Objektname Eingabefeld "Dimmstufe Licht Stall"
+const char NEX_NAME_GWTAG[] = "pageDaylight.p1_nb04";			// Objektname Eingabefeld "Grenzwert Tag"
+const char NEX_NAME_GWNACHT[] = "pageDaylight.p1_nb05";			// Objektname Eingabefeld "Grenzwert Nacht"
+const char NEX_NAME_LIGHTTIME[] = "pageBoxlight.p2_nb06";		// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
+const char NEX_NAME_DIMM[] = "pageBoxlight.p2_nb04";			// Objektname Eingabefeld "Dimmstufe Licht Stall"
 
-const char NEX_NAME_ACTDAYLIGHT[] = "pageDaylight.p1_nb02";		// effektiver Objektname Anzeigefeld "Rohwert Tageslicht"
-const char NEX_NAME_ACTSTATETAG[] = "pageDaylight.vaStateTag";	// effektiver Name der Hilfsvariable "Tag/Nacht-Status"
-const char NEX_NAME_ACTMOTFUSE[] = "pageMain.p0_nb06";			// effektiver Objektname Anzeigefeld "Rohwert RM Motorsicherung"
-const char NEX_NAME_ACTMOTFUSEALARM[] = "pageMain.vaMotfuseAlarm";	// effektiver Name der Hilfsvariable "Alarmstatus RM Motorsicherung"
-const char NEX_NAME_ACTBATTVOLT[] = "pageMain.p0_nb03";			// effektiver Objektname Anzeigefeld "Rohwert Batteriespannung"
-const char NEX_NAME_ACTBATTLEVEL[] = "pageMain.p0_nb04";		// effektiver Objektname Anzeigefeld "Prozentwert der Batterieladung"
-const char NEX_NAME_ACTSTATESWITCH[] = "pageSwitches.vaSwitch";	// effektiver Name der Hilfsvariable "Schalterzustand der Inputs"
-const char NEX_NAME_ACTSTATELICHT[] = "pageBoxlight.vaLicht";	// effektiver Name der Hilfsvariable "Ausgangszustand Licht Stall"
-const char NEX_NAME_ACTCYCLETIME[] = "pageDaylight.p1_nb07";	// effektiver Objektname Anzeigefeld "Zykluszeit der CPU"
+const char NEX_NAME_ACTDAYLIGHT[] = "pageDaylight.p1_nb02";		// Objektname Anzeigefeld "Rohwert Tageslicht"
+const char NEX_NAME_ACTSTATETAG[] = "pageDaylight.vaStateTag";	// Name der Hilfsvariable "Tag/Nacht-Status"
+const char NEX_NAME_ACTMOTFUSE[] = "pageMain.p0_nb06";			// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
+const char NEX_NAME_ACTMOTFUSEALARM[] = "pageMain.vaMotfuseAlarm";	// Name der Hilfsvariable "Alarmstatus RM Motorsicherung"
+const char NEX_NAME_ACTBATTRAW[] = "pageMain.p0_nb03";			// Objektname Anzeigefeld "Rohwert "Batterieladung"
+const char NEX_NAME_ACTBATTLEVEL[] = "pageMain.p0_nb04";		// Objektname Anzeigefeld "Prozentwert der Batterieladung"
+const char NEX_NAME_ACTSTATEINPUT[] = "pageSwitches.vaSwitch";	// Name der Hilfsvariable "Signalzustand der Inputs"
+const char NEX_NAME_ACTSTATELICHT[] = "pageBoxlight.vaLicht";	// Name der Hilfsvariable "Ausgangszustand Licht Stall"
+const char NEX_NAME_ACTCYCLETIME[] = "pageDaylight.p1_nb07";	// Objektname Anzeigefeld "Zykluszeit der CPU"
+
+const byte hmiAnzahlWerte = 13;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
 
 enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_MAXLIGHTTIME, HMI_REQ_DIMM};
 HMI_REQUEST hmiPendingRequest = HMI_NONE;						// aktuell offene "get"-Anfrage ans HMI
@@ -176,9 +190,10 @@ bool hmiLichtToggleRequest = false;								// HMI-Taster "Licht Stall" (wirkt wi
 unsigned long hmiRequestTime = 0;								// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
 unsigned long hmiRequestTimeout = 1000;							// Timeout in ms, falls HMI nicht antwortet
 unsigned long hmiSendTime = 2000;								// Sendefrequenz "hmiSend()" in Millisekunden
+unsigned long hmiSendStepTime = hmiSendTime / hmiAnzahlWerte;	// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FUNKTIONSPROTOTYPEN	***/
 
 		// Wenn andere Entwicklungsumgebung als Arduino IDE verwendet wird. Ohne diese Prototypen keine korrekte Kompilierung.
@@ -211,13 +226,13 @@ void torsteuerung();
 void beleuchtung();
 void ausgaenge();
 void alarmhandling();
-byte bitmaskSwitchState();
+byte bitmaskStateInputs();
 void hmiSend();
 void displayanzeige();
 void cycle();
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	SETUPCODE	***/
 
 void setup()	{
@@ -261,8 +276,8 @@ void loop()	{
 	cycle();								// FC "Zykluszeit berechnen"
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	INTERRUPT-ROUTINE	***/
 
 		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
@@ -273,8 +288,8 @@ void isrInterrupt()	{
 	return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "DEBUG-MODE: UART-AUSWAHL BEIM BOOTING	***/
 
 		// Taster beim Start NICHT gedrueckt -> sofort Nextion-Modus (kein Zeitverlust).
@@ -299,8 +314,8 @@ void checkDebugMode()	{
 	return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Remanenter Speicher auslesen"	***/
 
 void speicherRead()	{
@@ -333,8 +348,8 @@ void speicherRead()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Remanenter Speicher schreiben"	***/
 
 void speicherWrite()	{
@@ -364,8 +379,8 @@ void speicherWrite()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Helligkeit-GW-Bereiche gegenseitig pruefen"	***/
 
 void checkGwBereich()	{
@@ -397,8 +412,8 @@ void checkGwBereich()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Min/Max-Parameterpruefung"	***/
 
 void checkMinMax(int &viInput, int viGwLow, int viGwHigh)	{				// Haupt-Eingangsparamter als Referenz (CallByReference)
@@ -411,8 +426,8 @@ void checkMinMax(int &viInput, int viGwLow, int viGwHigh)	{				// Haupt-Eingangs
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Taster entprellen"	***/
 
 void entprellen()	{
@@ -447,8 +462,8 @@ void entprellen()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Messung Tageslicht"	***/
 
 void daylight()	{
@@ -489,8 +504,8 @@ void daylight()	{
 return;	
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Messung RM Motorsicherung"	***/
 
 void motfuse()	{
@@ -499,13 +514,13 @@ void motfuse()	{
 	int vbnewValue = 0;														// aktueller Messwert
   
 	vbnewValue = analogRead(INAMotfuse);									// Sicherungsspannung messen -> Integerwert 0..1024
-	motfuseVolt = (motfuseVolt * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
+	motfuseRaw = (motfuseRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
 
 // Zustand Motorsicherung ermitteln
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
 		vulTime = millis();             									// ...permanent die Laufzeit merken
 	}
-	if (motfuseVolt <= gwMotfuseVolt) {               						// Wenn Sicherungsspannung kleiner als Grenzwert dann...
+	if (motfuseRaw <= gwMotfuseRaw) {               						// Wenn Sicherungsspannung kleiner als Grenzwert dann...
 		vxState = true;                 									// ...laufender Status auf TRUE
 		if (millis() - vulTime > motfuseAlaTime)  {    						// ...wenn Alarmverzoegerung erreicht dann...
 			motfuseAlarm = true;                    						// 		...Alarmstatus "Motorsicherung ausgeloest" auf TRUE
@@ -516,8 +531,8 @@ void motfuse()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Messung Batteriespannung"	***/
 
 void batterie()	{
@@ -526,14 +541,14 @@ void batterie()	{
   	int vbnewValue = 0;														// aktueller Messwert
     
 	vbnewValue = analogRead(INABatterie);									// Batteriespannung messen -> Integerwert 0..1024
-	batterieVolt = (batterieVolt * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
-	batterieProzent = battAdcToPercent(batterieVolt);						// Ladezustand in Prozent ableiten
+	batterieRaw = (batterieRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
+	batterieProzent = battAdcToPercent(batterieRaw);						// Ladezustand in Prozent ableiten
 
 // Alarm Batteriezustand ermitteln
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
 		vulTime = millis();             									// ...permanent die Laufzeit merken
 	}
-	if (batterieVolt <= gwBatterieVolt) {               					// Wenn Batteriespannung kleiner als Grenzwert dann...
+	if (batterieRaw <= gwBatterieRaw) {               						// Wenn Batteriespannung kleiner als Grenzwert dann...
 		vxState = true;                 									// ...laufender Status auf TRUE
 		if (millis() - vulTime > battAlaTime)  {    						// ...wenn Alarmverzoegerung erreicht dann...
 			batterieAlarm = true;                    						// 		...Alarmstatus "Batterieladung tief" setzen
@@ -544,12 +559,12 @@ void batterie()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Batterie-Ladezustand aus Batteriespannung ableiten (AGM/Gel)"	***/
 		
 		// Gebraeuchliche Naeherungswerte fuer AGM/Gel-Batterien
-		// Bezogen an bestehenden Referenzpunkt "gwBatterieVolt" (810 ADC = 11.85V = 30%)
+		// Bezogen an bestehenden Referenzpunkt "gwBatterieRaw" (810 ADC = 11.85V = 30%)
 		// ADC-Spannung gemaess Spannungsteiler 12..15V = 4..5V
 
 struct BattSocPunkt	{
@@ -565,7 +580,7 @@ const BattSocPunkt battSocTabelle[] = {										// Tabelle ABSTEIGEND sortiert
 	{840,  60},		// 12.30V
 	{833,  50},		// 12.20V
 	{819,  40},		// 12.00V
-	{810,  30},		// 11.85V - bestehender Referenzpunkt "gwBatterieVolt"
+	{810,  30},		// 11.85V - bestehender Referenzpunkt "gwBatterieRaw"
 	{795,  20},		// 11.65V
 	{775,  10},		// 11.35V
 	{717,   0}		// 10.50V - als leer betrachtet
@@ -591,8 +606,8 @@ byte battAdcToPercent(int adcWert)	{
 return 0;																	// Sicherheitsnetz, wird bei obiger Abdeckung nie erreicht
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "UART-HMI: Telegrammlaenge bestimmen"	***/
 
 		// Liefert die gesamte Telegrammlaenge (Kommandobyte inklusive, OHNE die 3x 0xFF-Terminierung) fuer die ausgewerteten Telegrammtypen.
@@ -606,8 +621,8 @@ byte nexErwarteteLaenge(byte cmd)	{
 	}
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "UART-HMI: Daten empfangen"	***/
 
 		// #Nextion-Telegramme sind IMMER mit 3x 0xFF terminiert. Zwei Telegrammtypen werden ausgewertet:
@@ -692,7 +707,8 @@ void hmiRead()	{
 return;
 }
 
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "UART-HMI: Telegramm auswerten"	***/
 
 void nexFrameAuswerten(byte* frame, byte len)	{
@@ -732,7 +748,8 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 return;
 }
 
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "UART-HMI: validierten Wert uebernehmen"	***/
 
 void nexWertUebernehmen(long value)	{
@@ -780,7 +797,8 @@ void nexWertUebernehmen(long value)	{
 return;
 }
 
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "UART-HMI: Hilfsfunktionen (Senden)"	***/
 
 void nexEnde()	{															// Standard-Telegrammende (3x 0xFF) senden
@@ -804,8 +822,8 @@ void nexSetValue(const char* compName, long value)	{						// "<component>.val=<v
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Torsteuerung"	***/
 
 void torsteuerung()	{
@@ -1040,8 +1058,8 @@ void torsteuerung()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Innenbeleuchtung Stall"	***/
 
 		// Licht per Hardware-PWM im Verhaeltnis "dimmlevel" (0..100%) getaktet (Timer2).
@@ -1066,8 +1084,8 @@ void beleuchtung()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Ausgangsvariablen"	***/
 
 void ausgaenge()	{
@@ -1084,8 +1102,8 @@ void ausgaenge()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Alarmhandling"	***/
 
 void alarmhandling()	{
@@ -1135,128 +1153,157 @@ void alarmhandling()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Bitmaske Eingangssignale"	***/
 
-byte bitmaskSwitchState()	{
+byte bitmaskStateInputs()	{
 	
 	return (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
 		 | (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "HMI Daten senden"	***/
 
 void hmiSend()	{
 	static unsigned long vulTime = 0;
-	byte switchState = 0;													// Bitmaske der entprellten Eingaenge
+	static byte hmiSendIndex = 0;											// Index fuer Reihenfolge der naechsten Wert-Uebermittlung	
+	byte vbStateInputs = 0;													// Bitmaske der entprellten Eingaenge
 
-	if (millis() - vulTime >= hmiSendTime)	{								// Periodische Aktualisierung
+	if (millis() - vulTime >= hmiSendStepTime)	{								// Periodische Aktualisierung
 		vulTime = millis();
 
-		switchState = bitmaskSwitchState();
-					
-		nexSetValue(NEX_NAME_GWTAG, gwValueTag);
-		nexSetValue(NEX_NAME_GWNACHT, gwValueNacht);
-		nexSetValue(NEX_NAME_LIGHTTIME, lighttime);
-		nexSetValue(NEX_NAME_DIMM, dimmlevel);
-		nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue);						// Rohwert Tageslicht
-		nexSetValue(NEX_NAME_ACTSTATETAG, stateTag);						// Tag/Nacht-Status
-		nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseVolt);						// Rohwert RM Motorsicherung
-		nexSetValue(NEX_NAME_ACTMOTFUSEALARM, motfuseAlarm);				// Alarmstatus RM Motorsicherung
-		nexSetValue(NEX_NAME_ACTBATTVOLT, batterieVolt);					// Rohwert der Batteriespannung
-		nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent);				// Prozentwert der Batterieladung
-		nexSetValue(NEX_NAME_ACTSTATESWITCH, switchState);					// Schalterzustand der Inputs
-		nexSetValue(NEX_NAME_ACTSTATELICHT, outputs.Licht);					// Ausgangszustand Licht Stall
-		nexSetValue(NEX_NAME_ACTCYCLETIME, (long)cycleTime);				// Zykluszeit der CPU
-
+		vbStateInputs = bitmaskStateInputs();
+		
+		switch (hmiSendIndex)	{
+			case 0:  nexSetValue(NEX_NAME_GWTAG, gwValueTag); break;
+			case 1:  nexSetValue(NEX_NAME_GWNACHT, gwValueNacht); break;
+			case 2:  nexSetValue(NEX_NAME_LIGHTTIME, lighttime); break;
+			case 3:  nexSetValue(NEX_NAME_DIMM, dimmlevel); break;
+			case 4:  nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue); break;			// Rohwert Tageslicht
+			case 5:  nexSetValue(NEX_NAME_ACTSTATETAG, stateTag); break;			// Tag/Nacht-Status
+			case 6:  nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseRaw); break;			// Rohwert RM Motorsicherung
+			case 7:	 nexSetValue(NEX_NAME_ACTMOTFUSEALARM, motfuseAlarm); break;	// Alarmstatus RM Motorsicherung
+			case 8:  nexSetValue(NEX_NAME_ACTBATTRAW, batterieRaw); break;			// Rohwert der Batteriespannung
+			case 9:  nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent); break;	// Prozentwert der Batterieladung
+			case 10:  nexSetValue(NEX_NAME_ACTSTATEINPUT, vbStateInputs); break;	// Schalterzustand der Inputs (Bitmaske)
+			case 11: nexSetValue(NEX_NAME_ACTSTATELICHT, outputs.Licht); break;		// Ausgangszustand Licht Stall
+			case 12: nexSetValue(NEX_NAME_ACTCYCLETIME, (long)cycleTime); break;	// Zykluszeit der CPU
+		}
+		hmiSendIndex++;
+		if (hmiSendIndex >= hmiAnzahlWerte)	{
+			hmiSendIndex = 0;														// nach dem letzten Wert wieder von vorne
+		}			
 	}
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Displayanzeie"	***/
 
 void displayanzeige()	{
 	static unsigned long vulTime = 0;										// laufende Diplayzeit initialisieren
-	byte switchState = 0;													// Ergebnisse FC "Bitmaske
+	static byte debugSendIndex = 0;											// Index fuer Reihenfolge der naechsten Zeilen-Uebermittlung		
+	byte vbStateInputs = 0;													// Ergebnisse FC "Bitmaske
 			
-	if (millis() - vulTime >= displayTime) {								// Wenn "laufende Displayzeit" groesser Anzeigefrequenz dann...
+	if (millis() - vulTime >= debugStepTime) {								// Wenn "laufende Displayzeit" groesser Anzeigefrequenz dann...
 		vulTime = millis();													// ...laufende Displayzeit aktualisieren
 		
-		Serial.print("Grenzwert Tag: ");									// ...Anzeige GW Tag
-		Serial.print(gwValueTag);
-		Serial.print("                    ");
-		Serial.print("Grenzwert Nacht: ");									// ...Anzeige GW Nacht
-		Serial.print(gwValueNacht);
-		Serial.println();
-		Serial.print("Einschaltdauer Licht-Stall: ");						// ...Anzeige maximale Einschaltzeit "Licht Stall"
-		Serial.print(lighttime);
-		Serial.print(" Sek.   ");
-		Serial.print("Dimmstufe Licht-Stall: ");							// ...Anzeige PWM-Dimmstufe "Licht Stall"
-		Serial.print(dimmlevel);
-		Serial.print("%");
-		Serial.println();
-		Serial.print("Helligkeit: ");										// ...Anzeige aktueller Lichtwert "Tageslicht" als Rohwert
-		Serial.print(lightvalue);
-		Serial.print("   ");
-		Serial.print("Tagesstatus: ");										// ...Anzeige Status "Tag"
-		Serial.print(stateTag ? "Tag" : "Nacht");
-		Serial.println();
+		switch (debugSendIndex)	{											/***CHANGE - neu ***/
+			case 0:	{
+				Serial.print("Grenzwert Tag: ");									// ...Anzeige GW Tag
+				Serial.print(gwValueTag);
+				Serial.print("                    ");
+				Serial.print("Grenzwert Nacht: ");									// ...Anzeige GW Nacht
+				Serial.print(gwValueNacht);
+				Serial.println();
+			} break;
+			case 1:	{
+				Serial.print("Einschaltdauer Licht-Stall: ");						// ...Anzeige maximale Einschaltzeit "Licht Stall"
+				Serial.print(lighttime);
+				Serial.print(" Sek.   ");
+				Serial.print("Dimmstufe Licht-Stall: ");							// ...Anzeige PWM-Dimmstufe "Licht Stall"
+				Serial.print(dimmlevel);
+				Serial.print("%");
+				Serial.println();
+			} break;
+			case 2:	{
+				Serial.print("Helligkeit: ");										// ...Anzeige aktueller Lichtwert "Tageslicht" als Rohwert
+				Serial.print(lightvalue);
+				Serial.print("   ");
+				Serial.print("Tagesstatus: ");										// ...Anzeige Status "Tag"
+				Serial.print(stateTag ? "Tag" : "Nacht");
+				Serial.println();
+			} break;
+			case 3:	{
+				Serial.print("Spg.Motorsicherung: ");								// ...Anzeige Messung Sicherungsspannung "RM Motorsicherung" als Rohwert
+				Serial.print(motfuseRaw);
+				Serial.println();
+				} break;
+			case 4:	{
+				Serial.print("Batterieladung: ");									// ...Anzeige Messung Batterieladung als Rohwert
+				Serial.print(batterieRaw);
+				Serial.print(" (");
+				Serial.print(batterieProzent);										// ...Anzeige Messung Batterieladung in Prozent
+				Serial.println("%)");
+			} break;
+			case 5:	{
+				vbStateInputs = bitmaskStateInputs();								
+				Serial.print("Schalterzustand (Bitmaske wie HMI): ");				// ...Anzeige der entprellten Eingangssignale
+				for (byte i=0; i < anzahlPINIn; i++)	{
+					Serial.print(bitRead(vbStateInputs, i));	}
+				Serial.println();
+			} break;
+			case 6:	{
+				Serial.print("  [Safety1=");
+				Serial.print(inputs.Safety1);
+				Serial.print("  Safety2=");
+				Serial.print(inputs.Safety2);
+				Serial.print("  TorAuf=");
+				Serial.print(inputs.TstTorAuf);
+				Serial.print("  TorZu=");
+				Serial.print(inputs.TstTorZu);
+				Serial.print("  Licht=");
+				Serial.print(inputs.TstLicht);
+				Serial.print("  Reset=");
+				Serial.print(inputs.TstReset);
+				Serial.println("]");
+			} break;
+			case 7:	{
+				Serial.print("Ausgangszustand: ");									// ...Anzeige der aktuellen Ausgaenge
+				Serial.print(" [MotAuf=");
+				Serial.print(outputs.MotAuf);
+				Serial.print("  MotZu=");
+				Serial.print(outputs.MotZu);
+				Serial.print("  Licht=");
+				Serial.print(outputs.Licht);
+				Serial.print("  Alarm=");
+				Serial.print(outputs.Alarm);
+				Serial.print("  PowOn=");
+				Serial.print(outputs.PowOn);
+				Serial.println("]");
+			} break;
+			case 8:	{
+				Serial.print("Zykluszeit: ");                       				// ...Anzeige der aktuellen Zykluszeit
+				Serial.print(cycleTime);
+				Serial.println(" Microsekunden");
+				Serial.println("");
+			} break;
+		}
 		
-		Serial.print("Spg.Motorsicherung: ");								// ...Anzeige Messung Sicherungsspannung "RM Motorsicherung" als Rohwert
-		Serial.print(motfuseVolt);
-		Serial.println();
-		Serial.print("Batterieladung: ");									// ...Anzeige Messung Batterieladung als Rohwert
-		Serial.print(batterieVolt);
-		Serial.print(" (");
-		Serial.print(batterieProzent);										// ...Anzeige Messung Batterieladung in Prozent
-		Serial.println("%)");
-		
-		switchState = bitmaskSwitchState();								
-		Serial.print("Schalterzustand (Bitmaske wie HMI): ");				// ...Anzeige der entprellten Eingangssignale
-		for (byte i=0; i < anzahlPINIn; i++)	{
-			Serial.print(bitRead(switchState, i));	}
-		Serial.print("  [Safety1=");
-		Serial.print(inputs.Safety1);
-		Serial.print("  Safety2=");
-		Serial.print(inputs.Safety2);
-		Serial.print("  TorAuf=");
-		Serial.print(inputs.TstTorAuf);
-		Serial.print("  TorZu=");
-		Serial.print(inputs.TstTorZu);
-		Serial.print("  Licht=");
-		Serial.print(inputs.TstLicht);
-		Serial.print("  Reset=");
-		Serial.print(inputs.TstReset);
-		Serial.println("]");
-		
-		Serial.print("Ausgangszustand: ");									// ...Anzeige der aktuellen Ausgaenge
-		Serial.print(" [MotAuf=");
-		Serial.print(outputs.MotAuf);
-		Serial.print("  MotZu=");
-		Serial.print(outputs.MotZu);
-		Serial.print("  Licht=");
-		Serial.print(outputs.Licht);
-		Serial.print("  Alarm=");
-		Serial.print(outputs.Alarm);
-		Serial.print("  PowOn=");
-		Serial.print(outputs.PowOn);
-		Serial.println("]");
-		
-		Serial.print("Zykluszeit: ");                       				// ...Anzeige der aktuellen Zykluszeit
-		Serial.print(cycleTime);
-		Serial.println(" Microsekunden");
-		Serial.println("");
+		debugSendIndex++;														/***CHANGE - neu ***/
+		if (debugSendIndex >= debugAnzahlZeilen)	{							/***CHANGE - neu ***/
+			debugSendIndex = 0;												// nach der letzten Zeile wieder von vorne					/***CHANGE - neu ***/
+		}
 	}
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Zykluszeit berechnen"	***/
 
 void cycle()	{
@@ -1273,5 +1320,5 @@ void cycle()	{
 return;
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
