@@ -1,18 +1,23 @@
 /******************************************************************/
-/***	ChickenGateSystem Rev.E									***/
-/***	Korrekturversion: V26									***/
 /***															***/
-/***	Interrupt vorbereitet (OHNE Sleepmode)					***/
+/***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
+/***	Korrekturversion: V29		- im Code nachtragen		***/
+/***															***/
+/***															***/
+/***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
+/***	Debug-Mode fuer serielle Ausgabe bei CPU-Start waehlbar	***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
-/***	Sensorspeisung KEINE bistabilen Relais mehr				***/
+/***	Pruefung & Korrektur von HMI-Grenzwertparametern		***/
+/***	Sensorspeisung KEIN bistabiles Relais mehr				***/
 /***	Reset-Taster: KEINE Mehrfachfunktion mehr vorhanden		***/
-/***	Parameter und GW via HMI-Eingabefelder					***/
 /***	Statusmeldungen via HMI-Anzeigefelder					***/
 /***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button	***/
-/***	HW-PWM "Innenbeleuchtung Licht-Stall" umgesetzt			***/
+/***	Hardware-PWM " Licht-Stall" umgesetzt					***/
 /***	Korrektur Pinbelegung fuer Outputs (HW-PWM)				***/
 /***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
-/***	UART-Kanalwechsel (Debug-Mode serielle Ausgabe)			***/
+/***	Alarmzustaende als Bitmaske an HMI senden				***/
+/***	Race-Condition-Schutz HMI-Kommunikation (get/set)		***/
+/***	Fehler PWM-Dimmstufe behoben (map()						***/
 /***	allgemeine Codeverbesserungen							***/
 /******************************************************************/
 /******************************************************************************************************/
@@ -21,15 +26,16 @@
 /***																								***/
 /***	Analogcomperator zwischen den Auslesezyklen ausschalten										***/
 /***	Auslesefreqeuenz Analogssignale senken (Zeitkritisch mit Messstrom und Ladekondensator		***/
+/***	Analogwert-Bezug anpassen gegen interne Referenz aufgrund ungleichmässiger Speisung der CPU	***/
 /***	Sleepfunktion umsetzen																		***/
-/***	Revisionsstand an HMI senden																***/
-/***	Alarmstaten an HMI senden																	***/
-/***
+/***	Nextion-HMI via Analogausgang digital Ein/Ausschalten wegen Sleepmode-Konflikt				***/
+/***																								***/
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	BIBLIOTHEKEN	***/
 
 #include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der HMI-Eingabeparameter
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -49,41 +55,41 @@ const byte INTstLicht = 7;					// Taster "Licht Stall"
 const byte INTstReset = 8;    				// Taster "Reset"
 const byte OUTMotAuf = 9;					// Motorbefehl "Tor AUF"					(bistabiles Relais mit 2 Spulen)
 const byte OUTMotZu = 10;   				// Motorbefehl "Tor ZU"						(bistabiles Relais mit 2 Spulen)
-const byte OUTLicht = 11;   				// Innenbeleuchtung "Licht Stall" einschalten
+const byte OUTLicht = 11;   				// Beleuchtung "Licht Stall" einschalten
 const byte OUTAlarm = 12;     				// Signal-LED "Alarm"
 const byte OUTPowOn = 13;  					// "Torsensoren/partielle Motorspeisung" einschalten
 
-const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstReset};		// Array "arrPINIn" definieren und initialisieren
-const byte anzahlPINIn = sizeof(arrPINIn);																// Arraygroesse "arrPINIn" bestimmen (zwingend eine Konstante)
-const byte arrPINOut[] = {OUTMotAuf, OUTMotZu, OUTAlarm, OUTPowOn};										// Array "arrPINOut" definieren und initialisieren (OUTLicht als HW-PWM, daher NICHT im Array)
-const byte anzahlPINOut = sizeof(arrPINOut);															// Arraygroesse "arrPINOut" bestimmen (zwingend eine Konstante)
+const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstReset};// Array "arrPINIn" definieren und initialisieren
+const byte anzahlPINIn = sizeof(arrPINIn);														// Arraygroesse "arrPINIn" bestimmen (zwingend eine Konstante)
+const byte arrPINOut[] = {OUTMotAuf, OUTMotZu, OUTAlarm, OUTPowOn};								// Array "arrPINOut" definieren und initialisieren (OUTLicht als HW-PWM, daher NICHT im Array)
+const byte anzahlPINOut = sizeof(arrPINOut);													// Arraygroesse "arrPINOut" bestimmen (zwingend eine Konstante)
 
-struct strINPUT	{																						// Struktur-Architektur fuer Eingaenge definieren
+struct strINPUT	{																				// Struktur-Architektur fuer Eingaenge definieren
 	bool Safety1;
 	bool Safety2;
 	bool TstTorAuf;
 	bool TstTorZu;
 	bool TstLicht;
 	bool TstReset;
-}	inputs = {false, false, false, false, false, false};												// 		...Struktur-Variable "inputs" erstellen und initialisieren
-struct strOUTPUT	{																					// Struktur-Architektur fuer Ausgaenge definieren
+}	inputs = {false, false, false, false, false, false};										// 		...Struktur-Variable "inputs" erstellen und initialisieren
+struct strOUTPUT	{																			// Struktur-Architektur fuer Ausgaenge definieren
 	bool MotAuf;
 	bool MotZu;
 	bool Licht;
 	bool Alarm;
 	bool PowOn;
-}	outputs = {false, false, false, false, false};														// 		...Struktur-Variable "outputs" erstellen und initialisieren	
-struct strBLINK	{																						// Sruktur-Architektur fuer verschiedene Blinkzeiten definieren
+}	outputs = {false, false, false, false, false};												// 		...Struktur-Variable "outputs" erstellen und initialisieren	
+struct strBLINK	{																				// Sruktur-Architektur fuer verschiedene Blinkzeiten definieren
 	unsigned long MainOn;
 	unsigned long MainOff;
 	unsigned long BattOn;
 	unsigned long BattFirstOff;
 	unsigned long BattSecondOff;
-} blinktime = {800, 400, 200, 2500, 400};																// 		...Struktur-Variable fuer "blinktime" erstellen und initialisieren
+} blinktime = {800, 400, 200, 2500, 400};														// 		...Struktur-Variable fuer "blinktime" erstellen und initialisieren
 
 const unsigned long prellTime = 20;   		// Entprellzeit fuer die Eingangssignale   			[in Millisekunden]
 const unsigned long photoTime = 60000; 		// Hysteresezeit der Tag/Nacht-Umschaltung   		[in Millisekunden]
-const unsigned long motfuseAlaTime = 2000;	// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest			[in Millisekunden]
+const unsigned long motfuseAlaTime = 2000;	// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest		[in Millisekunden]
 const unsigned long battAlaTime = 5000;		// Alarmverzoegerung "Batterieladung" zu tief		[in Millisekunden]
 const unsigned long relaisTime = 500;		// Relais-Ansteuerzeit für die bistabilen Relais	[in Millisekunden]
 const unsigned long driveTime = 28000;		// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
@@ -94,10 +100,10 @@ const int DEF_GWVALNACHT = 100;				// Default Grenzwert Nacht-Status
 const int DEF_GWVALTAG = 300;				// Default Grenzwert Tag-Status
 const int MIN_GWBEREICH = 0;				// allgemein min. Analogwert
 const int MAX_GWBEREICH = 1024;				// allgemein max. Analogwert
-const int MIN_DIMMLEVEL = 0;				// min. PWM-Dimmstufe		[0%]
+const int MIN_DIMMLEVEL = 1;				// min. PWM-Dimmstufe		[0%]
 const int MAX_DIMMLEVEL = 100;				// max. PWM-Dimmstufe		[100%]
 const int DEF_DIMMLEVEL = 50;				// Default PWM-Dimmstufe	[50%]
-const int MIN_LIGHTTIME = 1;				// min. Einschaltdauer		[1 Sekunden]
+const int MIN_LIGHTTIME = 2;				// min. Einschaltdauer		[1 Sekunden]
 const int MAX_LIGHTTIME = 1800;				// max. Einschaltdauer		[1800 Sekunden]
 const int DEF_LIGHTTIME = 10;				// Default Einschaltdauer	[10 Sekunden]
 											
@@ -115,7 +121,7 @@ int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in
 const int averageCnt = 10;					// Anzahl Zyklen fuer Mittelwertbildung
 int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
 int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
-int batterieRaw = 0;						// aktueller Rohwert "Batterieladung"
+int batterieRaw = 0;						// aktueller Rohwert "Batteriespannung"
 int gwBatterieRaw = 810;					// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
 int batterieProzent = 0;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
 
@@ -125,7 +131,7 @@ int gwSafetyFail = 3;						// Grenzwert Anzahl erlaubter "Fahrfehler Tor" bis Al
 bool skAlarm = false;						// Alarmstatus "Schrittketten-Ablaufstoerung"
 bool safetyAlarm = false;					// Alarmstatus "Fahrfehler Tor" ausgeloest
 bool motfuseAlarm = false;					// Alarmstatus "RM Motorsicherung" (Sicherung ausgeloest)
-bool batterieAlarm = false;					// Alarmstatus "Batteriespannung tief"
+bool batterieAlarm = false;					// Alarmstatus "Batterieladung tief"
 
 enum SK_TOR {STANDBY, AUTOAUF, AUTOZU, HANDAUF, HANDZU};		// ENum-Definition der SK "Torsteuerung"
 	SK_TOR schrittTor = STANDBY;			// Variable "schrittTor" dem ENum zuweisen und Variable initialisieren
@@ -140,11 +146,13 @@ const byte ADDR_DIMMLEVEL = 6;				// EEPROM-Adresse: "DIMMSTUFE Licht Stall" (0.
 const byte ADDR_EEPROM_MAGIC = 7;			// EEPROM-Adresse: Gueltigkeits-Erkennungsbyte
 const byte EEPROM_MAGIC_VALUE = 0xA5;		// Erkennungswert der Speicherstruktur
 											// Naechste freie Adresse: 8
-											
-unsigned long displayTime = 1000;			// Display-Anzeigefrequenz							[in Millisekunden]
+
+const byte anzahlZeilenanzeige = 11;		// Anzahl Debug-Zeilen insgesamt (fuer Round-Robin-Funktion)											
+unsigned long serMonitorTime = 1000;		// Anzeigefrequenz im seriellen Monitor (Debug-Mode)[in Millisekunden]
+unsigned long debugStepTime = serMonitorTime / anzahlZeilenanzeige;		// Zeitabstand je Einzelzeile um Serial-Blockade zu verhindern
+
 unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
-const byte debugAnzahlZeilen = 9;			// Anzahl Debug-Zeilen insgesamt (fuer Round-Robin-Funktion)
-unsigned long debugStepTime = displayTime / debugAnzahlZeilen;		// Zeitabstand je Einzelzeile um Serial-Blockade zu verhindern
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -155,42 +163,49 @@ unsigned long debugStepTime = displayTime / debugAnzahlZeilen;		// Zeitabstand j
 		// WICHTIG: Component-IDs werden vom Nextion-Editor pro Seite ab 0 automatisch vergeben und koennen seitenuebergreifend identisch sein...
 		// ...die Auswertung in nexFrameAuswerten() prueft deshalb IMMER Seite UND ID gemeinsam!
 		
-const byte NEX_PAGE_MAIN = 0;				// Seite "pageMain"
-const byte NEX_PAGE_DAYLIGHT = 1;			// Seite "pageDaylight"
-const byte NEX_PAGE_BOXLIGHT = 2;			// Seite "pageBoxlight"
-const byte NEX_PAGE_SWITCHES = 3;			// Seite "pageSwitches"
+const byte NEX_PAGE_MAIN = 0;				// Seite "pMain"
+const byte NEX_PAGE_DAYLIGHT = 1;			// Seite "pDaylight"
+const byte NEX_PAGE_BOXLIGHT = 2;			// Seite "pBoxlight"
+const byte NEX_PAGE_SYSTEM = 3;				// Seite "pSystem"
+const byte NEX_PAGE_INPUTS = 4;				// Seite "pInputs"
+
 
 const byte NEX_CID_GWTAG = 4;				// Nextion-ID Eingabefeld "Grenzwert Tag"
-const byte NEX_CID_GWNACHT = 6;				// Nextion-ID Eingabefeld "Grenzwert Nacht"
+const byte NEX_CID_GWNACHT = 5;				// Nextion-ID Eingabefeld "Grenzwert Nacht"
 const byte NEX_CID_LIGHTTIME = 6;			// Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
 const byte NEX_CID_DIMM = 4;				// Nextion-ID Eingabefeld "Dimmstufe Licht Stall"
 const byte NEX_CID_LICHTTOGGLE = 7;			// Nextion-ID Eingabefeld "Button Licht Stall"
 
-const char NEX_NAME_GWTAG[] = "pageDaylight.p1_nb04";			// Objektname Eingabefeld "Grenzwert Tag"
-const char NEX_NAME_GWNACHT[] = "pageDaylight.p1_nb05";			// Objektname Eingabefeld "Grenzwert Nacht"
-const char NEX_NAME_LIGHTTIME[] = "pageBoxlight.p2_nb06";		// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
-const char NEX_NAME_DIMM[] = "pageBoxlight.p2_nb04";			// Objektname Eingabefeld "Dimmstufe Licht Stall"
+const char NEX_NAME_GWTAG[] = "pDaylight.nb104";				// Objektname Eingabefeld "Grenzwert Tag"
+const char NEX_NAME_GWNACHT[] = "pDaylight.nb105";				// Objektname Eingabefeld "Grenzwert Nacht"
+const char NEX_NAME_LIGHTTIME[] = "pBoxlight.nb206";			// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
+const char NEX_NAME_DIMM[] = "pBoxlight.nb204";					// Objektname Eingabefeld "Dimmstufe Licht Stall"
 
-const char NEX_NAME_ACTDAYLIGHT[] = "pageDaylight.p1_nb02";		// Objektname Anzeigefeld "Rohwert Tageslicht"
-const char NEX_NAME_ACTSTATETAG[] = "pageDaylight.vaStateTag";	// Name der Hilfsvariable "Tag/Nacht-Status"
-const char NEX_NAME_ACTMOTFUSE[] = "pageMain.p0_nb06";			// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
-const char NEX_NAME_ACTMOTFUSEALARM[] = "pageMain.vaMotfuseAlarm";	// Name der Hilfsvariable "Alarmstatus RM Motorsicherung"
-const char NEX_NAME_ACTBATTRAW[] = "pageMain.p0_nb03";			// Objektname Anzeigefeld "Rohwert "Batterieladung"
-const char NEX_NAME_ACTBATTLEVEL[] = "pageMain.p0_nb04";		// Objektname Anzeigefeld "Prozentwert der Batterieladung"
-const char NEX_NAME_ACTSTATEINPUT[] = "pageSwitches.vaSwitch";	// Name der Hilfsvariable "Signalzustand der Inputs"
-const char NEX_NAME_ACTSTATELICHT[] = "pageBoxlight.vaLicht";	// Name der Hilfsvariable "Ausgangszustand Licht Stall"
-const char NEX_NAME_ACTCYCLETIME[] = "pageDaylight.p1_nb07";	// Objektname Anzeigefeld "Zykluszeit der CPU"
+const char NEX_NAME_ACTDAYLIGHT[] = "pDaylight.nb103";			// Objektname Anzeigefeld "Rohwert Tageslicht"
+const char NEX_NAME_ACTSTATETAG[] = "pDaylight.vaStateTag";		// Name der Hilfsvariable "Tag/Nacht-Status"
+const char NEX_NAME_ACTMOTFUSE[] = "pSystem.nb306";				// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
+const char NEX_NAME_ACTSTATEALARM[] = "pSystem.vaAlarms";		// Name der Hilfsvariable "Signalzustand der Alarmstaten"
+const char NEX_NAME_ACTBATTRAW[] = "pSystem.nb303";				// Objektname Anzeigefeld "Rohwert "Batteriespannung"
+const char NEX_NAME_ACTBATTLEVEL[] = "pSystem.nb304";			// Objektname Anzeigefeld "Prozentwert der Batterieladung"
+const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
+const char NEX_NAME_ACTSTATELICHT[] = "pBoxlight.vaLicht";		// Name der Hilfsvariable "Ausgangszustand Licht Stall"
+const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefeld "Zykluszeit der CPU"
+const char NEX_NAME_ACTREVISION[] = "pMain.tx003";				// Name der Hilfsvariable "Revisionsbezeichnung" (z.B. "F05")
 
-const byte hmiAnzahlWerte = 13;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
+const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
+const byte REVISION_CODE = 29;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte hmiAnzahlWerte = 14;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
 
-enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_MAXLIGHTTIME, HMI_REQ_DIMM};
+enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_LIGHTTIME, HMI_REQ_DIMM};
 HMI_REQUEST hmiPendingRequest = HMI_NONE;						// aktuell offene "get"-Anfrage ans HMI
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
+
 bool hmiLichtToggleRequest = false;								// HMI-Taster "Licht Stall" (wirkt wie physischer Taster)
 unsigned long hmiRequestTime = 0;								// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
 unsigned long hmiRequestTimeout = 1000;							// Timeout in ms, falls HMI nicht antwortet
 unsigned long hmiSendTime = 2000;								// Sendefrequenz "hmiSend()" in Millisekunden
 unsigned long hmiSendStepTime = hmiSendTime / hmiAnzahlWerte;	// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -214,6 +229,7 @@ void nexWertUebernehmen(long value);
 void nexEnde();
 void nexGetValue(const char* compName);
 void nexSetValue(const char* compName, long value);
+void nexSetText(const char* compName, const char* text);
 
 /*** loop-Ablauf	***/
 void entprellen();
@@ -227,9 +243,11 @@ void beleuchtung();
 void ausgaenge();
 void alarmhandling();
 byte bitmaskStateInputs();
+byte bitmaskStateAlarm();	
 void hmiSend();
 void displayanzeige();
 void cycle();
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -276,6 +294,7 @@ void loop()	{
 	cycle();								// FC "Zykluszeit berechnen"
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	INTERRUPT-ROUTINE	***/
@@ -288,15 +307,16 @@ void isrInterrupt()	{
 	return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "DEBUG-MODE: UART-AUSWAHL BEIM BOOTING	***/
 
 		// Taster beim Start NICHT gedrueckt -> sofort Nextion-Modus (kein Zeitverlust).
-		// Taster gedrueckt -> sofern "debugBootTime" erreicht wird, wird der Serial-Monitor-Modus fuer den Debug-Modus aktiviert.
+		// Taster gedrueckt -> sofern "debugBootTime" erreicht wird, wird der Serial-Monitor-Modus fuer Debug-Mode aktiviert.
 
 void checkDebugMode()	{
-	unsigned long startZeit = 0;
+	unsigned long vulStartZeit = 0;
 	pinMode(INTstReset, INPUT);												// Muss bereits vor der Initialisierung als Eingang konfiguriert sein
 
 	if (digitalRead(INTstReset) == LOW)	{									// Taster beim Start nicht gedrueckt dann...
@@ -304,15 +324,16 @@ void checkDebugMode()	{
 		return;
 	}
 	debugMode = true;														// Annahme: Debug-Modus aktivieren -> bestaetigt wenn Taster durchgehend gehalten wird
-	startZeit = millis();
-	while (millis() - startZeit < debugBootTime)	{
+	vulStartZeit = millis();
+	while (millis() - vulStartZeit < debugBootTime)	{
 		if (digitalRead(INTstReset) == LOW)	{								// Wenn Taster vorzeitig losgelassen wird dann...
-			debugMode = false;												// ...wenn vor Pruefzeit Taster geloest wird dann Nextion-Modus, kein Warten noetig
+			debugMode = false;												// ...dann Nextion-Modus, kein Warten noetig
 			return;
 		}
 	}																		// Wenn Funktion durchlaeuft dann "Debug-Mode bzw. Serial-Monitor aktiv"
 	return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -348,6 +369,7 @@ void speicherRead()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Remanenter Speicher schreiben"	***/
@@ -378,6 +400,7 @@ void speicherWrite()	{
 	EEPROM.update(ADDR_DIMMLEVEL, vbDimmlevel);								// PWM-Dimmstufe "Licht Stall" in Speicher schreiben
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -412,6 +435,7 @@ void checkGwBereich()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Min/Max-Parameterpruefung"	***/
@@ -425,6 +449,7 @@ void checkMinMax(int &viInput, int viGwLow, int viGwHigh)	{				// Haupt-Eingangs
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -461,6 +486,7 @@ void entprellen()	{
 	inputs.TstReset = vaTaster[5].xMainstate;
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -504,6 +530,7 @@ void daylight()	{
 return;	
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Messung RM Motorsicherung"	***/
@@ -531,20 +558,21 @@ void motfuse()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Messung Batteriespannung"	***/
 
 void batterie()	{
-	static unsigned long vulTime = 0;      									// laufende Alarmverzoegerung "Batteriespannung"
-	static bool vxState = false;                			    			// laufender Status "Batteriespannung"
+	static unsigned long vulTime = 0;      									// laufende Alarmverzoegerung "Batterieladung"
+	static bool vxState = false;                			    			// laufender Status "Batterieladung"
   	int vbnewValue = 0;														// aktueller Messwert
     
 	vbnewValue = analogRead(INABatterie);									// Batteriespannung messen -> Integerwert 0..1024
 	batterieRaw = (batterieRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
 	batterieProzent = battAdcToPercent(batterieRaw);						// Ladezustand in Prozent ableiten
 
-// Alarm Batteriezustand ermitteln
+// Alarm Batterieladung ermitteln
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
 		vulTime = millis();             									// ...permanent die Laufzeit merken
 	}
@@ -558,6 +586,7 @@ void batterie()	{
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -606,6 +635,7 @@ byte battAdcToPercent(int adcWert)	{
 return 0;																	// Sicherheitsnetz, wird bei obiger Abdeckung nie erreicht
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "UART-HMI: Telegrammlaenge bestimmen"	***/
@@ -621,6 +651,7 @@ byte nexErwarteteLaenge(byte cmd)	{
 	}
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "UART-HMI: Daten empfangen"	***/
@@ -629,73 +660,73 @@ byte nexErwarteteLaenge(byte cmd)	{
 		//   0x65 <page> <component> <event>		-> Touch-Ereignis (event: 0=Release, 1=Press)
 		//   0x71 <b0> <b1> <b2> <b3>				-> Rueckgabewert einer "get"-Anfrage (int32 little-endian)
 		// Ablauf: Beim Loslassen einer bekannten Eingabekomponente wird per "get compname.val" aktiv nach dem
-		// aktuellen Wert gefragt; die Antwort (0x71) wird dann dem zuvor gemerkten Parameter zugeordnet.
-		// Die Nutzlaenge wird anhand des Kommandobyte vorgegeben (nexErwarteteLaenge()),und so wird ein 0xFF-Byte innerhalb der
-		// Nutzdaten (z.B. hohe int32-Werte oder negative Zahlen in Two's-Complement) korrekt als Datenbyte
-		// uebernommen und nicht als Telegrammende gewertet. Nur nach Erreichen der erwarteten Nutzlaenge wird auf die 3x 0xFF-Terminierung geprueft. 
-		// Kommt kein 0xFF, wird von einem Protokoll-Desync ausgegangen und das Telegramm verworfen (Resync).
+		//  ...aktuellen Wert gefragt; die Antwort (0x71) wird dann dem zuvor gemerkten Parameter zugeordnet.
+		//  ...Die Nutzlaenge wird anhand des Kommandobyte vorgegeben (nexErwarteteLaenge()),und so wird ein 0xFF-Byte innerhalb der
+		//  ...Nutzdaten (z.B. hohe int32-Werte oder negative Zahlen in Two's-Complement) korrekt als Datenbyte
+		//  ...uebernommen und nicht als Telegrammende gewertet. Nur nach Erreichen der erwarteten Nutzlaenge wird auf die 3x 0xFF-Terminierung geprueft. 
+		//  ...Kommt kein 0xFF, wird von einem Protokoll-Desync ausgegangen und das Telegramm verworfen (Resync).
 
 void hmiRead()	{
-	static byte buf[16];													// Empfangspuffer fuer ein Telegramm (Kommandobyte inklusive)
-	static byte bufLen = 0;													// Anzahl bereits empfangener Telegramm-Bytes
-	static byte erwarteteLaenge = 0;										// Erwartete Gesamtlaenge (inkl. Kommandobyte) des laufenden Telegramms
-	static byte ffCount = 0;												// Zaehler aufeinanderfolgender 0xFF (nur fuer Terminator- bzw. Resync-Erkennung)
-	static NEX_PARSE_STATE state = NEX_WAIT_CMD;							// Parser-Zustand (bleibt ueber Aufrufe hinweg erhalten)
+	static byte vBuf[16];													// Empfangspuffer fuer ein Telegramm (Kommandobyte inklusive)
+	static byte vBufLen = 0;													// Anzahl bereits empfangener Telegramm-Bytes
+	static byte vErwarteteLaenge = 0;										// Erwartete Gesamtlaenge (inkl. Kommandobyte) des laufenden Telegramms
+	static byte vFFCount = 0;												// Zaehler aufeinanderfolgender 0xFF (nur fuer Terminator- bzw. Resync-Erkennung)
+	static NEX_PARSE_STATE vState = NEX_WAIT_CMD;							// Parser-Zustand (bleibt ueber Aufrufe hinweg erhalten)
 
 	while (Serial.available() > 0)	{										// Solange Zeichen im UART-Puffer warten...
-		byte b = Serial.read();
+		byte vB = Serial.read();
 
-		switch (state)	{
+		switch (vState)	{
 			case NEX_WAIT_CMD:												// Warten auf das naechste Kommandobyte (Telegrammanfang)
-				if (b == 0xFF)	{											// ...ueberzaehlige/verirrte Terminator-Reste einfach ignorieren
+				if (vB == 0xFF)	{											// ...ueberzaehlige/verirrte Terminator-Reste einfach ignorieren
 					break;
 				}
-				bufLen = 0;
-				buf[bufLen++] = b;											// ...Kommandobyte uebernehmen
-				erwarteteLaenge = nexErwarteteLaenge(b);					// ...erwartete Gesamtlaenge anhand des Kommandobytes bestimmen
-				ffCount = 0;
-				if (erwarteteLaenge > 0)	{								// Bekannter, ausgewerteter Telegrammtyp...
-					state = (bufLen < erwarteteLaenge) ? NEX_COLLECT_PAYLOAD : NEX_WAIT_TERM;
+				vBufLen = 0;
+				vBuf[vBufLen++] = vB;											// ...Kommandobyte uebernehmen
+				vErwarteteLaenge = nexErwarteteLaenge(vB);					// ...erwartete Gesamtlaenge anhand des Kommandobytes bestimmen
+				vFFCount = 0;
+				if (vErwarteteLaenge > 0)	{								// Bekannter, ausgewerteter Telegrammtyp...
+					vState = (vBufLen < vErwarteteLaenge) ? NEX_COLLECT_PAYLOAD : NEX_WAIT_TERM;
 				}else{														// ...sonst unbekannter Typ -> nur bis zum Ende ueberspringen
-					state = NEX_SKIP_UNKNOWN;
+					vState = NEX_SKIP_UNKNOWN;
 				}
 			break;
 
 			case NEX_COLLECT_PAYLOAD:										// Nutzdaten eines bekannten Telegrammtyps sammeln
-				if (bufLen < sizeof(buf))	{								// Nur puffern wenn noch Platz (Schutz vor Overflow)
-					buf[bufLen++] = b;										// ...JEDES Byte, AUCH 0xFF, zaehlt hier als Nutzdatum (keine Terminator-Wertung!)
+				if (vBufLen < sizeof(vBuf))	{								// Nur puffern wenn noch Platz (Schutz vor Overflow)
+					vBuf[vBufLen++] = vB;										// ...JEDES Byte, AUCH 0xFF, zaehlt hier als Nutzdatum (keine Terminator-Wertung!)
 				}
-				if (bufLen >= erwarteteLaenge)	{							// Wenn die erwartete Nutzlaenge erreicht ist dann...
-					state = NEX_WAIT_TERM;									// ...ab jetzt die 3x 0xFF-Terminierung erwarten
+				if (vBufLen >= vErwarteteLaenge)	{							// Wenn die erwartete Nutzlaenge erreicht ist dann...
+					vState = NEX_WAIT_TERM;									// ...ab jetzt die 3x 0xFF-Terminierung erwarten
 				}
 			break;
 
 			case NEX_WAIT_TERM:												// Ab hier werden ausschliesslich die 3x 0xFF-Terminatorbytes erwartet
-				if (b == 0xFF)	{
-					ffCount++;
-					if (ffCount >= 3)	{									// Telegramm korrekt terminiert...
-						nexFrameAuswerten(buf, bufLen);						// ...auswerten
-						bufLen = 0;											// ...Puffer fuer naechstes Telegramm zuruecksetzen
-						ffCount = 0;
-						state = NEX_WAIT_CMD;
+				if (vB == 0xFF)	{
+					vFFCount++;
+					if (vFFCount >= 3)	{									// Telegramm korrekt terminiert...
+						nexFrameAuswerten(vBuf, vBufLen);						// ...auswerten
+						vBufLen = 0;											// ...Puffer fuer naechstes Telegramm zuruecksetzen
+						vFFCount = 0;
+						vState = NEX_WAIT_CMD;
 					}
 				}else{														// Kein 0xFF wo Terminator erwartet wird -> Protokoll-Desync...
-					bufLen = 0;												// ...Telegramm verwerfen...
-					ffCount = 0;
-					state = NEX_WAIT_CMD;									// ...und mit dem naechsten Byte neu synchronisieren
+					vBufLen = 0;												// ...Telegramm verwerfen...
+					vFFCount = 0;
+					vState = NEX_WAIT_CMD;									// ...und mit dem naechsten Byte neu synchronisieren
 				}
 			break;
 
 			case NEX_SKIP_UNKNOWN:											// Unbekannter/nicht ausgewerteter Telegrammtyp -> klassische 3x-0xFF-Suche zum Ueberspringen
-				if (b == 0xFF)	{
-					ffCount++;
-					if (ffCount >= 3)	{									// Telegrammende gefunden -> verwerfen (keine Auswertung noetig)...
-						bufLen = 0;
-						ffCount = 0;
-						state = NEX_WAIT_CMD;								// ...und mit dem naechsten Byte neu synchronisieren
+				if (vB == 0xFF)	{
+					vFFCount++;
+					if (vFFCount >= 3)	{									// Telegrammende gefunden -> verwerfen (keine Auswertung noetig)...
+						vBufLen = 0;
+						vFFCount = 0;
+						vState = NEX_WAIT_CMD;								// ...und mit dem naechsten Byte neu synchronisieren
 					}
 				}else{
-					ffCount = 0;
+					vFFCount = 0;
 				}
 			break;
 		}
@@ -707,6 +738,7 @@ void hmiRead()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "UART-HMI: Telegramm auswerten"	***/
@@ -717,76 +749,77 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 	}
 
 	if ((frame[0] == 0x65) && (len >= 4))	{								// Touch-Ereignis: 0x65, page, component, event
-		byte pageId = frame[1];												// Seite, auf der das Ereignis stattfand
-		byte compId = frame[2];												// Objekt-ID (wird von Nextion fix vergeben)
-		byte eventType = frame[3];											// Event-Typ
+		byte vPageId = frame[1];												// Seite, auf der das Ereignis stattfand
+		byte vCompId = frame[2];												// Objekt-ID (wird von Nextion fix vergeben)
+		byte vEventType = frame[3];											// Event-Typ
 
-		if (eventType == 0x00)	{											// Nur bei "Loslassen" reagieren (Wert steht dann fest)
-			HMI_REQUEST req = HMI_NONE;
-			const char* name = nullptr;
+		if (vEventType == 0x00)	{											// Nur bei "Loslassen" reagieren (Wert steht dann fest)
+			HMI_REQUEST vReq = HMI_NONE;
+			const char* vName = nullptr;
 
-			if ((pageId == NEX_PAGE_DAYLIGHT) && (compId == NEX_CID_GWTAG))				{ req = HMI_REQ_GWTAG;			name = NEX_NAME_GWTAG;	}
-			else if ((pageId == NEX_PAGE_DAYLIGHT) && (compId == NEX_CID_GWNACHT))		{ req = HMI_REQ_GWNACHT;		name = NEX_NAME_GWNACHT;	}
-			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_LIGHTTIME))	{ req = HMI_REQ_MAXLIGHTTIME;	name = NEX_NAME_LIGHTTIME;	}
-			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_DIMM))			{ req = HMI_REQ_DIMM;			name = NEX_NAME_DIMM;	}
-			else if ((pageId == NEX_PAGE_BOXLIGHT) && (compId == NEX_CID_LICHTTOGGLE))	{
+			if ((vPageId == NEX_PAGE_DAYLIGHT) && (vCompId == NEX_CID_GWTAG))				{ vReq = HMI_REQ_GWTAG;			vName = NEX_NAME_GWTAG;	}
+			else if ((vPageId == NEX_PAGE_DAYLIGHT) && (vCompId == NEX_CID_GWNACHT))		{ vReq = HMI_REQ_GWNACHT;		vName = NEX_NAME_GWNACHT;	}
+			else if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_LIGHTTIME))	{ vReq = HMI_REQ_LIGHTTIME;	vName = NEX_NAME_LIGHTTIME;	}
+			else if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_DIMM))			{ vReq = HMI_REQ_DIMM;			vName = NEX_NAME_DIMM;	}
+			else if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_LICHTTOGGLE))	{
 				hmiLichtToggleRequest = true;
 				return;
 			}
 
-			if (req != HMI_NONE)	{										// Wenn eine bekannte Eingabekomponente betroffen ist dann...
-				nexGetValue(name);											// ...aktuellen Wert aktiv anfragen
-				hmiPendingRequest = req;									// ...und merken, worauf sich die Antwort  bezieht
+			if ((vReq != HMI_NONE) && (hmiPendingRequest == HMI_NONE))	{	// Wenn bekannte Eingabekomponente UND keine Anfrage bereits offen ist dann...
+				nexGetValue(vName);											// ...aktuellen Wert aktiv anfragen
+				hmiPendingRequest = vReq;									// ...und merken, worauf sich die Antwort  bezieht
 				hmiRequestTime = millis();
 			}
 		}
 	}
 	else if ((frame[0] == 0x71) && (len >= 5))	{							// Rueckgabewert einer "get"-Anfrage: 0x71 + 4 Byte int32 LE
-		long value = (long)frame[1] | ((long)frame[2] << 8) | ((long)frame[3] << 16) | ((long)frame[4] << 24);
-		nexWertUebernehmen(value);
+		long vValue = (long)frame[1] | ((long)frame[2] << 8) | ((long)frame[3] << 16) | ((long)frame[4] << 24);
+		nexWertUebernehmen(vValue);
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "UART-HMI: validierten Wert uebernehmen"	***/
 
 void nexWertUebernehmen(long value)	{
-	int neuerWert = (int)value;
+	int vNeuerWert = (int)value;
 
 	switch (hmiPendingRequest)	{
 		case HMI_REQ_GWTAG:	{
-			int vorTag = gwValueTag;											// Werte vor der Aenderung merken (checkGwBereich()
-			int vorNacht = gwValueNacht;										// kann bei Bedarf BEIDE Grenzwerte anpassen)
-			gwValueTag = neuerWert;
+			int vVorTag = gwValueTag;											// Werte vor der Aenderung merken (checkGwBereich()
+			int vVorNacht = gwValueNacht;										// kann bei Bedarf BEIDE Grenzwerte anpassen
+			gwValueTag = vNeuerWert;
 			checkGwBereich();													// Tag/Nacht/Hysterese-Verhaeltnis pruefen und ggf. korrigieren
-			if ((gwValueTag != vorTag) || (gwValueNacht != vorNacht))	{		// Nur bei tatsaechlicher Aenderung...
+			if ((gwValueTag != vVorTag) || (gwValueNacht != vVorNacht))	{		// Nur bei tatsaechlicher Aenderung...
 				speicherWrite();												// ...remanent sichern
 			}
 		} break;
 		case HMI_REQ_GWNACHT:	{
-			int vorTag = gwValueTag;
-			int vorNacht = gwValueNacht;
-			gwValueNacht = neuerWert;
+			int vVorTag = gwValueTag;
+			int vVorNacht = gwValueNacht;
+			gwValueNacht = vNeuerWert;
 			checkGwBereich();
-			if ((gwValueTag != vorTag) || (gwValueNacht != vorNacht))	{
+			if ((gwValueTag != vVorTag) || (gwValueNacht != vVorNacht))	{
 				speicherWrite();
 			}
 		} break;
-		case HMI_REQ_MAXLIGHTTIME:	{
-			int vorher = lighttime;
-			lighttime = neuerWert;
+		case HMI_REQ_LIGHTTIME:	{
+			int vVorher = lighttime;
+			lighttime = vNeuerWert;
 			checkMinMax(lighttime, MIN_LIGHTTIME, MAX_LIGHTTIME);
-			if (lighttime != vorher)	{
+			if (lighttime != vVorher)	{
 				speicherWrite();
 			}
 		} break;
 		case HMI_REQ_DIMM:	{
-			int vorher = dimmlevel;
-			dimmlevel = neuerWert;
+			int vVorher = dimmlevel;
+			dimmlevel = vNeuerWert;
 			checkMinMax(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL);
-			if (dimmlevel != vorher)	{
+			if (dimmlevel != vVorher)	{
 				speicherWrite();
 			}
 		} break;
@@ -796,6 +829,7 @@ void nexWertUebernehmen(long value)	{
 	hmiPendingRequest = HMI_NONE;											// Anfrage abgeschlossen
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -821,6 +855,16 @@ void nexSetValue(const char* compName, long value)	{						// "<component>.val=<v
 	nexEnde();
 return;
 }
+
+void nexSetText(const char* compName, const char* text)	{					// "<component>.txt=\"<text>\"" absenden
+	Serial.print(compName);
+	Serial.print(".txt=\"");
+	Serial.print(text);
+	Serial.print("\"");
+	nexEnde();
+return;
+}
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -1058,6 +1102,7 @@ void torsteuerung()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Innenbeleuchtung Stall"	***/
@@ -1072,7 +1117,7 @@ void beleuchtung()	{
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
 		vulTime = millis();             									// ...permanent die Laufzeit merken
 	}
-	if (((inputs.TstLicht == true) && (vxOldState == false)) || (hmiLichtToggleRequest == true))	{				// Wenn Taster mit positiver Flanke gedrueckt ODER HMI-Taster dann...
+	if (((inputs.TstLicht == true) && (vxOldState == false)) || (hmiLichtToggleRequest == true))	{	// Wenn Taster mit positiver Flanke gedrueckt ODER HMI-Taster dann...
 		vxState = !vxState;													// ... wenn Zustand vorher AUS war, dann invertieren
 	}
 	hmiLichtToggleRequest = false;											// HMI-Anforderung nach Verarbeitung immer zuruecksetzen		
@@ -1084,23 +1129,25 @@ void beleuchtung()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Ausgangsvariablen"	***/
 
 void ausgaenge()	{
-	bool vaOutputs[anzahlPINOut] = {outputs.MotAuf, outputs.MotZu, outputs.Alarm, outputs.PowOn};	// Struct-Variable in Array uebergeben
+	bool vaOutputs[anzahlPINOut] = {outputs.MotAuf, outputs.MotZu, outputs.Alarm, outputs.PowOn};		// Struct-Variable in Array uebergeben
 
 	for (byte i = 0; i < anzahlPINOut; i++)	{								// for-Schlaufe mit n-Durchlaeufen fuer n-Ausgaenge
 		digitalWrite(arrPINOut[i], vaOutputs[i] ? HIGH : LOW);				// Array-Wert dem jeweiligen Hardware-Ausgang zuweisen
 	}
 	if (outputs.Licht == true)	{											// Licht "Stall": Hardware-PWM
-		analogWrite(OUTLicht, map(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL, 0, 255));	// Dimmstufe 0..100% auf PWM-Tastgrad 0..255 abbilden
+		analogWrite(OUTLicht, map(dimmlevel, 0, 100, 0, 255));				// Dimmstufe 0..100% auf PWM-Tastgrad 0..255 abbilden
 	}else{
 		analogWrite(OUTLicht, 0);
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -1127,7 +1174,7 @@ void alarmhandling()	{
 		}else{                          									// ...sonst...
 		  outputs.Alarm = true;												// 		...LED einschalten
 		}
-	}else if (batterieAlarm == true) {										// Sonst wenn Alarmstatus "Batterie-Ladezustand tief" dann...
+	}else if (batterieAlarm == true) {										// Sonst wenn Alarmstatus "Batterieladung tief" dann...
 		vulBlinkOn = blinktime.BattOn;										// ...Variablen fuer Blinktakt "doppelt" beschreiben
 		vulBlinkOff1 = blinktime.BattFirstOff;								// ..."dito"
 		vulBlinkOff2 = blinktime.BattSecondOff;								// ..."dito"
@@ -1153,14 +1200,20 @@ void alarmhandling()	{
 return;
 }
 
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	FC "Bitmaske Eingangssignale"	***/
 
-byte bitmaskStateInputs()	{
+byte bitmaskStateInputs()	{												// Alle Inputsignale in einer Bitmaske zusammenfassen		
 	
 	return (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
 		 | (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
+}
+
+byte bitmaskStateAlarm()	{												// Alle Alarmzustaende in einer Bitmaske zusammenfassen
+	
+	return (skAlarm << 0) | (motfuseAlarm << 1) | (safetyAlarm << 2) | (batterieAlarm << 3);
 }
 
 /******************************************************************************************************/
@@ -1172,15 +1225,12 @@ byte bitmaskStateInputs()	{
 		
 void hmiSend()	{
 	static unsigned long vulTime = 0;
-	static byte hmiSendIndex = 0;											// Index fuer Reihenfolge der naechsten Wert-Uebermittlung	
-	byte vbStateInputs = 0;													// Bitmaske der entprellten Eingaenge
+	static byte vHmiSendIndex = 0;													// Index fuer Reihenfolge der naechsten Wert-Uebermittlung	
 
-	if (millis() - vulTime >= hmiSendStepTime)	{								// Periodische Aktualisierung
+	if ((millis() - vulTime >= hmiSendStepTime) && (hmiPendingRequest == HMI_NONE))	{// Periodische Aktualisierung - PAUSIERT komplett, solange eine "get"-Antwort ausstehend ist
 		vulTime = millis();
-
-		vbStateInputs = bitmaskStateInputs();
 		
-		switch (hmiSendIndex)	{
+		switch (vHmiSendIndex)	{
 			case 0:  nexSetValue(NEX_NAME_GWTAG, gwValueTag); break;
 			case 1:  nexSetValue(NEX_NAME_GWNACHT, gwValueNacht); break;
 			case 2:  nexSetValue(NEX_NAME_LIGHTTIME, lighttime); break;
@@ -1188,20 +1238,27 @@ void hmiSend()	{
 			case 4:  nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue); break;			// Rohwert Tageslicht
 			case 5:  nexSetValue(NEX_NAME_ACTSTATETAG, stateTag); break;			// Tag/Nacht-Status
 			case 6:  nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseRaw); break;			// Rohwert RM Motorsicherung
-			case 7:	 nexSetValue(NEX_NAME_ACTMOTFUSEALARM, motfuseAlarm); break;	// Alarmstatus RM Motorsicherung
+			case 7:	 nexSetValue(NEX_NAME_ACTSTATEALARM, bitmaskStateAlarm()); break;		// Signalzustand der Alarmstaten (Bitmaske)
 			case 8:  nexSetValue(NEX_NAME_ACTBATTRAW, batterieRaw); break;			// Rohwert der Batteriespannung
 			case 9:  nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent); break;	// Prozentwert der Batterieladung
-			case 10:  nexSetValue(NEX_NAME_ACTSTATEINPUT, vbStateInputs); break;	// Schalterzustand der Inputs (Bitmaske)
+			case 10:  nexSetValue(NEX_NAME_ACTSTATEINPUT, bitmaskStateInputs()); break;		// Schalterzustand der Inputs (Bitmaske)
 			case 11: nexSetValue(NEX_NAME_ACTSTATELICHT, outputs.Licht); break;		// Ausgangszustand Licht Stall
 			case 12: nexSetValue(NEX_NAME_ACTCYCLETIME, (long)cycleTime); break;	// Zykluszeit der CPU
+			case 13:	{															// Revisionsbezeichnung, z.B. "F05"
+				char vRevisionText[4];												// 1 Buchstabe + 2 Ziffern + Nullterminierung
+				vRevisionText[0] = REVISION_SCHEMA;
+				snprintf(&vRevisionText[1], sizeof(vRevisionText) - 1, "%02u", REVISION_CODE);	// %02u = immer 2-stellig, fuehrende Null
+				nexSetText(NEX_NAME_ACTREVISION, vRevisionText);
+			} break;
 		}
-		hmiSendIndex++;
-		if (hmiSendIndex >= hmiAnzahlWerte)	{
-			hmiSendIndex = 0;														// nach dem letzten Wert wieder von vorne
+		vHmiSendIndex++;
+		if (vHmiSendIndex >= hmiAnzahlWerte)	{
+			vHmiSendIndex = 0;														// nach dem letzten Wert wieder von vorne
 		}			
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -1212,59 +1269,60 @@ return;
 		
 void displayanzeige()	{
 	static unsigned long vulTime = 0;										// laufende Diplayzeit initialisieren
-	static byte debugSendIndex = 0;											// Index fuer Reihenfolge der naechsten Zeilen-Uebermittlung		
-	byte vbStateInputs = 0;													// Ergebnisse FC "Bitmaske
+	static byte vDebugSendIndex = 0;										// Index fuer Reihenfolge der naechsten Zeilen-Uebermittlung		
+	byte vbStateInputs = 0;													// Ergebnisse FC "Bitmaske Inputs"
+	byte vbStateAlarms = 0;													// Ergebnis FC "Bitmaske Alarmzustaende"
 			
 	if (millis() - vulTime >= debugStepTime) {								// Wenn "laufende Displayzeit" groesser Anzeigefrequenz dann...
 		vulTime = millis();													// ...laufende Displayzeit aktualisieren
 		
-		switch (debugSendIndex)	{											/***CHANGE - neu ***/
+		switch (vDebugSendIndex)	{
 			case 0:	{
-				Serial.print("Grenzwert Tag: ");									// ...Anzeige GW Tag
+				Serial.print("Grenzwert Tag: ");							// ...Anzeige GW Tag
 				Serial.print(gwValueTag);
 				Serial.print("     ");
-				Serial.print("Grenzwert Nacht: ");									// ...Anzeige GW Nacht
+				Serial.print("Grenzwert Nacht: ");							// ...Anzeige GW Nacht
 				Serial.print(gwValueNacht);
 				Serial.println();
 			} break;
 			case 1:	{
-				Serial.print("Licht-Stall Einschaltdauer: ");						// ...Anzeige maximale Einschaltzeit "Licht Stall"
+				Serial.print("Licht-Stall Einschaltdauer: ");				// ...Anzeige max.Einschaltzeit "Licht Stall"
 				Serial.print(lighttime);
 				Serial.print(" Sek.     ");
-				Serial.print("Dimmstufe: ");										// ...Anzeige PWM-Dimmstufe "Licht Stall"
+				Serial.print("Dimmstufe: ");								// ...Anzeige PWM-Dimmstufe "Licht Stall"
 				Serial.print(dimmlevel);
 				Serial.print(" %");
 				Serial.println();
 			} break;
 			case 2:	{
-				Serial.print("Helligkeit: ");										// ...Anzeige aktueller Lichtwert "Tageslicht" als Rohwert
+				Serial.print("Helligkeit: ");								// ...Anzeige Rohwert aktueller Lichtwert "Tageslicht"
 				Serial.print(lightvalue);
 				Serial.print("     ");
-				Serial.print("Tagesstatus: ");										// ...Anzeige Status "Tag"
+				Serial.print("Tagesstatus: ");								// ...Anzeige Status "Tag"
 				Serial.print(stateTag ? "Tag" : "Nacht");
 				Serial.println();
 			} break;
 			case 3:	{
-				Serial.print("Spg.Motorsicherung: ");								// ...Anzeige Messung Sicherungsspannung "RM Motorsicherung" als Rohwert
+				Serial.print("Spg.Motorsicherung: ");						// ...Anzeige Rohwert Messung "RM Motorsicherung"
 				Serial.print(motfuseRaw);
 				Serial.println();
 				} break;
 			case 4:	{
-				Serial.print("Batterieladung: ");									// ...Anzeige Messung Batterieladung als Rohwert
+				Serial.print("Batterieladung: ");							// ...Anzeige Rohwert Messung Batteriespannung
 				Serial.print(batterieRaw);
 				Serial.print(" (");
-				Serial.print(batterieProzent);										// ...Anzeige Messung Batterieladung in Prozent
+				Serial.print(batterieProzent);								// ...Anzeige Prozentwert Batterieladung
 				Serial.println(" %)");
 			} break;
 			case 5:	{
-				vbStateInputs = bitmaskStateInputs();								
-				Serial.print("Schalterzustand (Bitmaske wie HMI): ");				// ...Anzeige der entprellten Eingangssignale
+				vbStateInputs = bitmaskStateInputs();						// ...Anzeige der entprellten Eingangssignale als reine Bitmaske					
+				Serial.print("Schalterzustand (Bitmaske wie HMI): ");
 				for (byte i=0; i < anzahlPINIn; i++)	{
 					Serial.print(bitRead(vbStateInputs, i));	}
 				Serial.println();
 			} break;
 			case 6:	{
-				Serial.print("  [Safety1=");
+				Serial.print("  [Safety1=");								// ...Anzeige der entprellten Eingangssignale als Text
 				Serial.print(inputs.Safety1);
 				Serial.print("  Safety2=");
 				Serial.print(inputs.Safety2);
@@ -1279,7 +1337,7 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 7:	{
-				Serial.print("Ausgaenge:");									// ...Anzeige der aktuellen Ausgaenge
+				Serial.print("Ausgaenge:");									// ...Anzeige der aktuellen Ausgangssignale
 				Serial.print("  [MotAuf=");
 				Serial.print(outputs.MotAuf);
 				Serial.print("  MotZu=");
@@ -1293,20 +1351,39 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 8:	{
-				Serial.print("Zykluszeit: ");                       				// ...Anzeige der aktuellen Zykluszeit
+				vbStateAlarms = bitmaskStateAlarm();							// ...Anzeige der Alarmstaten als reine Bitmaske
+				Serial.print("Alarmzustand (Bitmaske wie HMI): ");				// 4 Alarmquellen (siehe bitmaskStateAlarm())
+				for (byte i=0; i < 4; i++)	{
+					Serial.print(bitRead(vbStateAlarms, i));	}
+				Serial.println();
+			} break;
+			case 9:	{															// ...Anzeige der Alarmstaten als Text
+				Serial.print("  [skAlarm=");
+				Serial.print(skAlarm);
+				Serial.print("  motfuseAlarm=");
+				Serial.print(motfuseAlarm);
+				Serial.print("  safetyAlarm=");
+				Serial.print(safetyAlarm);
+				Serial.print("  batterieAlarm=");
+				Serial.print(batterieAlarm);
+				Serial.println("]");
+			} break;
+			case 10:	{
+				Serial.print("Zykluszeit: ");                       			// ...Anzeige der aktuellen Zykluszeit
 				Serial.print(cycleTime);
 				Serial.println(" Microsekunden");
 				Serial.println("");
 			} break;
 		}
 		
-		debugSendIndex++;														/***CHANGE - neu ***/
-		if (debugSendIndex >= debugAnzahlZeilen)	{							/***CHANGE - neu ***/
-			debugSendIndex = 0;												// nach der letzten Zeile wieder von vorne					/***CHANGE - neu ***/
+		vDebugSendIndex++;
+		if (vDebugSendIndex >= anzahlZeilenanzeige)	{
+			vDebugSendIndex = 0;											// nach der letzten Zeile wieder von vorne
 		}
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -1325,6 +1402,7 @@ void cycle()	{
 	}
 return;
 }
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/

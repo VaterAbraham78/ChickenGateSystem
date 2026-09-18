@@ -1,7 +1,7 @@
 /******************************************************************/
 /***															***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V29		- im Code nachtragen		***/
+/***	Korrekturversion: V30		- im Code nachtragen		***/
 /***															***/
 /***															***/
 /***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
@@ -15,6 +15,9 @@
 /***	Hardware-PWM " Licht-Stall" umgesetzt					***/
 /***	Korrektur Pinbelegung fuer Outputs (HW-PWM)				***/
 /***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
+/***	Alarmzustaende als Bitmaske an HMI senden				***/
+/***	Race-Condition-Schutz HMI-Kommunikation (get/set)		***/
+/***	Fehler PWM-Dimmstufe behoben (map()						***/
 /***	allgemeine Codeverbesserungen							***/
 /******************************************************************/
 /******************************************************************************************************/
@@ -25,7 +28,6 @@
 /***	Auslesefreqeuenz Analogssignale senken (Zeitkritisch mit Messstrom und Ladekondensator		***/
 /***	Analogwert-Bezug anpassen gegen interne Referenz aufgrund ungleichmässiger Speisung der CPU	***/
 /***	Sleepfunktion umsetzen																		***/
-/***	Alarmstaten an HMI senden																	***/
 /***	Nextion-HMI via Analogausgang digital Ein/Ausschalten wegen Sleepmode-Konflikt				***/
 /***																								***/
 /******************************************************************************************************/
@@ -98,7 +100,7 @@ const int DEF_GWVALNACHT = 100;				// Default Grenzwert Nacht-Status
 const int DEF_GWVALTAG = 300;				// Default Grenzwert Tag-Status
 const int MIN_GWBEREICH = 0;				// allgemein min. Analogwert
 const int MAX_GWBEREICH = 1024;				// allgemein max. Analogwert
-const int MIN_DIMMLEVEL = 5;				// min. PWM-Dimmstufe		[0%]
+const int MIN_DIMMLEVEL = 1;				// min. PWM-Dimmstufe		[0%]
 const int MAX_DIMMLEVEL = 100;				// max. PWM-Dimmstufe		[100%]
 const int DEF_DIMMLEVEL = 50;				// Default PWM-Dimmstufe	[50%]
 const int MIN_LIGHTTIME = 2;				// min. Einschaltdauer		[1 Sekunden]
@@ -191,7 +193,7 @@ const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefel
 const char NEX_NAME_ACTREVISION[] = "pMain.tx003";				// Name der Hilfsvariable "Revisionsbezeichnung" (z.B. "F05")
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 29;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 30;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 const byte hmiAnzahlWerte = 14;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
 
 enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_LIGHTTIME, HMI_REQ_DIMM};
@@ -201,7 +203,7 @@ enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP
 bool hmiLichtToggleRequest = false;								// HMI-Taster "Licht Stall" (wirkt wie physischer Taster)
 unsigned long hmiRequestTime = 0;								// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
 unsigned long hmiRequestTimeout = 1000;							// Timeout in ms, falls HMI nicht antwortet
-unsigned long hmiSendTime = 1000;								// Sendefrequenz "hmiSend()" in Millisekunden
+unsigned long hmiSendTime = 2000;								// Sendefrequenz "hmiSend()" in Millisekunden
 unsigned long hmiSendStepTime = hmiSendTime / hmiAnzahlWerte;	// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
 
 
@@ -1139,7 +1141,7 @@ void ausgaenge()	{
 		digitalWrite(arrPINOut[i], vaOutputs[i] ? HIGH : LOW);				// Array-Wert dem jeweiligen Hardware-Ausgang zuweisen
 	}
 	if (outputs.Licht == true)	{											// Licht "Stall": Hardware-PWM
-		analogWrite(OUTLicht, map(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL, 0, 255));					// Dimmstufe 0..100% auf PWM-Tastgrad 0..255 abbilden
+		analogWrite(OUTLicht, map(dimmlevel, 0, 100, 0, 255));				// Dimmstufe 0..100% auf PWM-Tastgrad 0..255 abbilden
 	}else{
 		analogWrite(OUTLicht, 0);
 	}
@@ -1349,7 +1351,7 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 8:	{
-				byte vbStateAlarms = bitmaskStateAlarm();						// ...Anzeige der Alarmstaten als reine Bitmaske
+				vbStateAlarms = bitmaskStateAlarm();							// ...Anzeige der Alarmstaten als reine Bitmaske
 				Serial.print("Alarmzustand (Bitmaske wie HMI): ");				// 4 Alarmquellen (siehe bitmaskStateAlarm())
 				for (byte i=0; i < 4; i++)	{
 					Serial.print(bitRead(vbStateAlarms, i));	}
