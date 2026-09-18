@@ -1,7 +1,7 @@
 /******************************************************************/
 /***															***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V29		- im Code nachtragen		***/
+/***	Korrekturversion: V30		- im Code nachtragen		***/
 /***															***/
 /***															***/
 /***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
@@ -184,7 +184,7 @@ const char NEX_NAME_DIMM[] = "pBoxlight.nb204";					// Objektname Eingabefeld "D
 const char NEX_NAME_ACTDAYLIGHT[] = "pDaylight.nb103";			// Objektname Anzeigefeld "Rohwert Tageslicht"
 const char NEX_NAME_ACTSTATETAG[] = "pDaylight.vaStateTag";		// Name der Hilfsvariable "Tag/Nacht-Status"
 const char NEX_NAME_ACTMOTFUSE[] = "pSystem.nb306";				// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
-const char NEX_NAME_ACTSTATEALARM[] = "pSystem.vaAlarms";		// Name der Hilfsvariable "Signalzustand der Alarmstaten"
+const char NEX_NAME_ACTSTATEALARM[] = "pMain.vaAlarms";			// Name der Hilfsvariable "Signalzustand der Alarmstaten"
 const char NEX_NAME_ACTBATTRAW[] = "pSystem.nb303";				// Objektname Anzeigefeld "Rohwert "Batteriespannung"
 const char NEX_NAME_ACTBATTLEVEL[] = "pSystem.nb304";			// Objektname Anzeigefeld "Prozentwert der Batterieladung"
 const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
@@ -193,7 +193,7 @@ const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefel
 const char NEX_NAME_ACTREVISION[] = "pMain.tx003";				// Name der Hilfsvariable "Revisionsbezeichnung" (z.B. "F05")
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 29;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 30;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 const byte hmiAnzahlWerte = 14;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
 
 enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_LIGHTTIME, HMI_REQ_DIMM};
@@ -205,6 +205,9 @@ unsigned long hmiRequestTime = 0;								// Zeitpunkt der letzten "get"-Anfrage 
 unsigned long hmiRequestTimeout = 1000;							// Timeout in ms, falls HMI nicht antwortet
 unsigned long hmiSendTime = 2000;								// Sendefrequenz "hmiSend()" in Millisekunden
 unsigned long hmiSendStepTime = hmiSendTime / hmiAnzahlWerte;	// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
+bool hmiReceiveInProgress = false;								// true, waehrend ein Telegramm empfangen wird (aber noch nicht fertig ausgewertet wurde)
+unsigned long hmiReceiveStartTime = 0;							// Zeitpunkt, an dem der aktuelle Telegrammempfang begonnen hat
+const unsigned long hmiReceiveTimeout = 200;					// Sicherheitsabschaltung falls ein Telegramm nie fertig eintrifft [ms]
 
 
 /******************************************************************************************************/
@@ -690,13 +693,15 @@ void hmiRead()	{
 				}else{														// ...sonst unbekannter Typ -> nur bis zum Ende ueberspringen
 					vState = NEX_SKIP_UNKNOWN;
 				}
+				hmiReceiveInProgress = true;								// Telegrammempfang begonnen - hmiSend() pausiert jetzt zusaetzlich
+				hmiReceiveStartTime = millis();	
 			break;
 
 			case NEX_COLLECT_PAYLOAD:										// Nutzdaten eines bekannten Telegrammtyps sammeln
 				if (vBufLen < sizeof(vBuf))	{								// Nur puffern wenn noch Platz (Schutz vor Overflow)
-					vBuf[vBufLen++] = vB;										// ...JEDES Byte, AUCH 0xFF, zaehlt hier als Nutzdatum (keine Terminator-Wertung!)
+					vBuf[vBufLen++] = vB;									// ...JEDES Byte, AUCH 0xFF, zaehlt hier als Nutzdatum (keine Terminator-Wertung!)
 				}
-				if (vBufLen >= vErwarteteLaenge)	{							// Wenn die erwartete Nutzlaenge erreicht ist dann...
+				if (vBufLen >= vErwarteteLaenge)	{						// Wenn die erwartete Nutzlaenge erreicht ist dann...
 					vState = NEX_WAIT_TERM;									// ...ab jetzt die 3x 0xFF-Terminierung erwarten
 				}
 			break;
@@ -705,15 +710,17 @@ void hmiRead()	{
 				if (vB == 0xFF)	{
 					vFFCount++;
 					if (vFFCount >= 3)	{									// Telegramm korrekt terminiert...
-						nexFrameAuswerten(vBuf, vBufLen);						// ...auswerten
-						vBufLen = 0;											// ...Puffer fuer naechstes Telegramm zuruecksetzen
+						nexFrameAuswerten(vBuf, vBufLen);					// ...auswerten
+						vBufLen = 0;										// ...Puffer fuer naechstes Telegramm zuruecksetzen
 						vFFCount = 0;
 						vState = NEX_WAIT_CMD;
+						hmiReceiveInProgress = false;						// Telegramm fertig - hmiSend() darf wieder senden
 					}
 				}else{														// Kein 0xFF wo Terminator erwartet wird -> Protokoll-Desync...
-					vBufLen = 0;												// ...Telegramm verwerfen...
+					vBufLen = 0;											// ...Telegramm verwerfen...
 					vFFCount = 0;
 					vState = NEX_WAIT_CMD;									// ...und mit dem naechsten Byte neu synchronisieren
+					hmiReceiveInProgress = false;
 				}
 			break;
 
@@ -724,6 +731,7 @@ void hmiRead()	{
 						vBufLen = 0;
 						vFFCount = 0;
 						vState = NEX_WAIT_CMD;								// ...und mit dem naechsten Byte neu synchronisieren
+						hmiReceiveInProgress = false;
 					}
 				}else{
 					vFFCount = 0;
@@ -731,7 +739,13 @@ void hmiRead()	{
 			break;
 		}
 	}
-
+	
+	if ((hmiReceiveInProgress == true) && (millis() - hmiReceiveStartTime > hmiReceiveTimeout))	{
+		vBufLen = 0;														// Sicherheitsabschaltung: Telegramm kam nie vollstaendig an
+		vFFCount = 0;														// ...Parser zuruecksetzen, damit hmiSend() nicht dauerhaft blockiert
+		vState = NEX_WAIT_CMD;
+		hmiReceiveInProgress = false;
+	}
 	if ((hmiPendingRequest != HMI_NONE) && (millis() - hmiRequestTime > hmiRequestTimeout))	{	// Wenn offene Anfrage zu lange unbeantwortet dann...
 		hmiPendingRequest = HMI_NONE;										// ...Anfrage verwerfen (kein Absturz/Haengenbleiben)
 	}
@@ -1227,7 +1241,7 @@ void hmiSend()	{
 	static unsigned long vulTime = 0;
 	static byte vHmiSendIndex = 0;													// Index fuer Reihenfolge der naechsten Wert-Uebermittlung	
 
-	if ((millis() - vulTime >= hmiSendStepTime) && (hmiPendingRequest == HMI_NONE))	{// Periodische Aktualisierung - PAUSIERT komplett, solange eine "get"-Antwort ausstehend ist
+	if ((millis() - vulTime >= hmiSendStepTime) && (hmiPendingRequest == HMI_NONE) && (hmiReceiveInProgress == false))	{	// Periodische Aktualisierung - PAUSIERT komplett, solange eine "get"-Antwort ausstehend ODER ein Telegramm noch am Eintreffen ist
 		vulTime = millis();
 		
 		switch (vHmiSendIndex)	{
