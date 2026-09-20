@@ -1,7 +1,7 @@
 /******************************************************************/
 /***															***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V30		- im Code nachtragen		***/
+/***	Korrekturversion: V31		- im Code nachtragen		***/
 /***															***/
 /***															***/
 /***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
@@ -16,10 +16,10 @@
 /***	Korrektur Pinbelegung fuer Outputs (HW-PWM)				***/
 /***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
 /***	Alarmzustaende als Bitmaske an HMI senden				***/
-/***	Race-Condition-Schutz HMI-Kommunikation (get/set)		***/
+/***	Nextion-Kommunikatino umgebaut - NICHT abwaertskompatibel**/
 /***	Fehler PWM-Dimmstufe behoben (map()						***/
-/***	allgemeine Codeverbesserungen							***/
 /******************************************************************/
+
 /******************************************************************************************************/
 /***																								***/
 /***	OFFENE CODEIMPLEMENTIERUNGEN																***/
@@ -29,6 +29,7 @@
 /***	Analogwert-Bezug anpassen gegen interne Referenz aufgrund ungleichmässiger Speisung der CPU	***/
 /***	Sleepfunktion umsetzen																		***/
 /***	Nextion-HMI via Analogausgang digital Ein/Ausschalten wegen Sleepmode-Konflikt				***/
+/***	Alarm-Reset nur auf steigende Flanke auswerten												***/
 /***																								***/
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -163,6 +164,9 @@ unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
 		// WICHTIG: Component-IDs werden vom Nextion-Editor pro Seite ab 0 automatisch vergeben und koennen seitenuebergreifend identisch sein...
 		// ...die Auswertung in nexFrameAuswerten() prueft deshalb IMMER Seite UND ID gemeinsam!
 		
+		// WICHTIG: "editingId" (globale Nextion-Variable) enthaelt die ID des zuletzt per Touch-Press beruehrten Zahlenfeldes
+		// ...wird in dessen Postinitialize direkt mit Seite+ID+Wert per 0x73 uebertragen (siehe nexFrameAuswerten()), kein "get" mehr noetig!
+		
 const byte NEX_PAGE_MAIN = 0;				// Seite "pMain"
 const byte NEX_PAGE_DAYLIGHT = 1;			// Seite "pDaylight"
 const byte NEX_PAGE_BOXLIGHT = 2;			// Seite "pBoxlight"
@@ -172,39 +176,40 @@ const byte NEX_PAGE_INPUTS = 4;				// Seite "pInputs"
 
 const byte NEX_CID_GWTAG = 4;				// Nextion-ID Eingabefeld "Grenzwert Tag"
 const byte NEX_CID_GWNACHT = 5;				// Nextion-ID Eingabefeld "Grenzwert Nacht"
-const byte NEX_CID_LIGHTTIME = 6;			// Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
 const byte NEX_CID_DIMM = 4;				// Nextion-ID Eingabefeld "Dimmstufe Licht Stall"
+const byte NEX_CID_LIGHTTIME = 6;			// Nextion-ID Eingabefeld "max.Einschaltdauer Licht Stall"
 const byte NEX_CID_LICHTTOGGLE = 7;			// Nextion-ID Eingabefeld "Button Licht Stall"
 
 const char NEX_NAME_GWTAG[] = "pDaylight.nb104";				// Objektname Eingabefeld "Grenzwert Tag"
 const char NEX_NAME_GWNACHT[] = "pDaylight.nb105";				// Objektname Eingabefeld "Grenzwert Nacht"
-const char NEX_NAME_LIGHTTIME[] = "pBoxlight.nb206";			// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
 const char NEX_NAME_DIMM[] = "pBoxlight.nb204";					// Objektname Eingabefeld "Dimmstufe Licht Stall"
+const char NEX_NAME_LIGHTTIME[] = "pBoxlight.nb206";			// Objektname Eingabefeld "max.Einschaltdauer Licht Stall"
 
+const char NEX_NAME_ACTREVISION[] = "pMain.tx003";				// Name der Hilfsvariable "Revisionsbezeichnung" (z.B. "F05")
+const char NEX_NAME_ACTSTATEALARM[] = "pMain.vaAlarms";			// Name der Hilfsvariable "Signalzustand der Alarmstaten"
 const char NEX_NAME_ACTDAYLIGHT[] = "pDaylight.nb103";			// Objektname Anzeigefeld "Rohwert Tageslicht"
 const char NEX_NAME_ACTSTATETAG[] = "pDaylight.vaStateTag";		// Name der Hilfsvariable "Tag/Nacht-Status"
-const char NEX_NAME_ACTMOTFUSE[] = "pSystem.nb306";				// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
-const char NEX_NAME_ACTSTATEALARM[] = "pMain.vaAlarms";			// Name der Hilfsvariable "Signalzustand der Alarmstaten"
+const char NEX_NAME_ACTSTATELICHT[] = "pBoxlight.vaLicht";		// Name der Hilfsvariable "Ausgangszustand Licht Stall"
 const char NEX_NAME_ACTBATTRAW[] = "pSystem.nb303";				// Objektname Anzeigefeld "Rohwert "Batteriespannung"
 const char NEX_NAME_ACTBATTLEVEL[] = "pSystem.nb304";			// Objektname Anzeigefeld "Prozentwert der Batterieladung"
-const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
-const char NEX_NAME_ACTSTATELICHT[] = "pBoxlight.vaLicht";		// Name der Hilfsvariable "Ausgangszustand Licht Stall"
+const char NEX_NAME_ACTMOTFUSERAW[] = "pSystem.nb306";			// Objektname Anzeigefeld "Rohwert RM Motorsicherung"
+const char NEX_NAME_ACTSTATEMOTFUSE[] = "pSystem.vaMotfuse";	// Name der Hilfsvariable "Alarmzustand Motorsicherung"
 const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefeld "Zykluszeit der CPU"
-const char NEX_NAME_ACTREVISION[] = "pMain.tx003";				// Name der Hilfsvariable "Revisionsbezeichnung" (z.B. "F05")
+const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
+
+
+
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 30;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
-const byte hmiAnzahlWerte = 14;									// Anzahl HMI-Werte insgesamt (fuer Round-Robin-Taktung)
+const byte REVISION_CODE = 31;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 
-enum HMI_REQUEST {HMI_NONE, HMI_REQ_GWTAG, HMI_REQ_GWNACHT, HMI_REQ_LIGHTTIME, HMI_REQ_DIMM};
-HMI_REQUEST hmiPendingRequest = HMI_NONE;						// aktuell offene "get"-Anfrage ans HMI
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
+byte currentPage = NEX_PAGE_MAIN;								// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
+byte hmiSendIndex = 0;											// Index innerhalb der aktuellen Seite fuer hmiSend() (seitenuebergreifend zugreifbar, da bei Seitenwechsel in nexFrameAuswerten() zurueckgesetzt)	
 
 bool hmiLichtToggleRequest = false;								// HMI-Taster "Licht Stall" (wirkt wie physischer Taster)
-unsigned long hmiRequestTime = 0;								// Zeitpunkt der letzten "get"-Anfrage (fuer Timeout)
-unsigned long hmiRequestTimeout = 1000;							// Timeout in ms, falls HMI nicht antwortet
-unsigned long hmiSendTime = 2000;								// Sendefrequenz "hmiSend()" in Millisekunden
-unsigned long hmiSendStepTime = hmiSendTime / hmiAnzahlWerte;	// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
+unsigned long hmiSendTime = 1000;								// Sendefrequenz "hmiSend()" in Millisekunden
+unsigned long hmiSendStepTime = 150;							// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
 bool hmiReceiveInProgress = false;								// true, waehrend ein Telegramm empfangen wird (aber noch nicht fertig ausgewertet wurde)
 unsigned long hmiReceiveStartTime = 0;							// Zeitpunkt, an dem der aktuelle Telegrammempfang begonnen hat
 const unsigned long hmiReceiveTimeout = 200;					// Sicherheitsabschaltung falls ein Telegramm nie fertig eintrifft [ms]
@@ -228,7 +233,7 @@ void checkMinMax(int &viInput, int viGwLow, int viGwHigh);
 /*** Nextion-HMI	***/
 byte nexErwarteteLaenge(byte cmd);
 void nexFrameAuswerten(byte* frame, byte len);
-void nexWertUebernehmen(long value);
+void nexWertUebernehmen(byte page, byte id, long value);		// Signatur geaendert: page+id Kennung
 void nexEnde();
 void nexGetValue(const char* compName);
 void nexSetValue(const char* compName, long value);
@@ -649,7 +654,8 @@ return 0;																	// Sicherheitsnetz, wird bei obiger Abdeckung nie erre
 byte nexErwarteteLaenge(byte cmd)	{
 	switch (cmd)	{
 		case 0x65: return 4;												// Touch-Ereignis: 0x65, page, component, event
-		case 0x71: return 5;												// "get"-Antwort:  0x71 + 4 Byte int32 (little-endian)
+		case 0x66: return 2;												// Seitenwechsel ("sendme"): 0x66 + page
+		case 0x73: return 7;												// Direktuebertragung: 0x73 + page + id + 4 Byte int32 (LE)
 		default:   return 0;												// unbekannter/nicht ausgewerteter Telegrammtyp
 	}
 }
@@ -745,10 +751,7 @@ void hmiRead()	{
 		vFFCount = 0;														// ...Parser zuruecksetzen, damit hmiSend() nicht dauerhaft blockiert
 		vState = NEX_WAIT_CMD;
 		hmiReceiveInProgress = false;
-	}
-	if ((hmiPendingRequest != HMI_NONE) && (millis() - hmiRequestTime > hmiRequestTimeout))	{	// Wenn offene Anfrage zu lange unbeantwortet dann...
-		hmiPendingRequest = HMI_NONE;										// ...Anfrage verwerfen (kein Absturz/Haengenbleiben)
-	}
+	}																		// hmiPendingRequest-Timeout entfaellt - kein "get" mehr, siehe 0x73-Direktuebertragung
 return;
 }
 
@@ -762,34 +765,26 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 		return;
 	}
 
-	if ((frame[0] == 0x65) && (len >= 4))	{								// Touch-Ereignis: 0x65, page, component, event
-		byte vPageId = frame[1];												// Seite, auf der das Ereignis stattfand
-		byte vCompId = frame[2];												// Objekt-ID (wird von Nextion fix vergeben)
-		byte vEventType = frame[3];											// Event-Typ
+	if ((frame[0] == 0x65) && (len >= 4))	{								// Touch-Ereignis: 0x65, page, component, event - nur noch fuer den Lichttaster gebraucht
+		byte vPageId = frame[1];
+		byte vCompId = frame[2];
+		byte vEventType = frame[3];
 
-		if (vEventType == 0x00)	{											// Nur bei "Loslassen" reagieren (Wert steht dann fest)
-			HMI_REQUEST vReq = HMI_NONE;
-			const char* vName = nullptr;
-
-			if ((vPageId == NEX_PAGE_DAYLIGHT) && (vCompId == NEX_CID_GWTAG))				{ vReq = HMI_REQ_GWTAG;			vName = NEX_NAME_GWTAG;	}
-			else if ((vPageId == NEX_PAGE_DAYLIGHT) && (vCompId == NEX_CID_GWNACHT))		{ vReq = HMI_REQ_GWNACHT;		vName = NEX_NAME_GWNACHT;	}
-			else if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_LIGHTTIME))	{ vReq = HMI_REQ_LIGHTTIME;	vName = NEX_NAME_LIGHTTIME;	}
-			else if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_DIMM))			{ vReq = HMI_REQ_DIMM;			vName = NEX_NAME_DIMM;	}
-			else if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_LICHTTOGGLE))	{
+		if (vEventType == 0x00)	{											// Nur bei "Loslassen" reagieren
+			if ((vPageId == NEX_PAGE_BOXLIGHT) && (vCompId == NEX_CID_LICHTTOGGLE))	{
 				hmiLichtToggleRequest = true;
-				return;
-			}
-
-			if ((vReq != HMI_NONE) && (hmiPendingRequest == HMI_NONE))	{	// Wenn bekannte Eingabekomponente UND keine Anfrage bereits offen ist dann...
-				nexGetValue(vName);											// ...aktuellen Wert aktiv anfragen
-				hmiPendingRequest = vReq;									// ...und merken, worauf sich die Antwort  bezieht
-				hmiRequestTime = millis();
 			}
 		}
 	}
-	else if ((frame[0] == 0x71) && (len >= 5))	{							// Rueckgabewert einer "get"-Anfrage: 0x71 + 4 Byte int32 LE
-		long vValue = (long)frame[1] | ((long)frame[2] << 8) | ((long)frame[3] << 16) | ((long)frame[4] << 24);
-		nexWertUebernehmen(vValue);
+	else if ((frame[0] == 0x66) && (len >= 2))	{							// Seitenwechsel-Meldung ("sendme", in jeder Seiten-Preinitialize hinterlegt)
+		currentPage = frame[1];												// ...aktuelle Seite merken
+		hmiSendIndex = 0;														// ...Rundlauf fuer die neue Seite von vorne beginnen
+	}
+	else if ((frame[0] == 0x73) && (len >= 7))	{							// Direktuebertragung Seite+ID+Wert (ersetzt 0x65+"get"+0x71 fuer Eingabefelder)
+		byte vPageId = frame[1];
+		byte vCompId = frame[2];
+		long vValue = (long)frame[3] | ((long)frame[4] << 8) | ((long)frame[5] << 16) | ((long)frame[6] << 24);
+		nexWertUebernehmen(vPageId, vCompId, vValue);
 	}
 return;
 }
@@ -799,48 +794,43 @@ return;
 /******************************************************************************************************/
 /***	FC "UART-HMI: validierten Wert uebernehmen"	***/
 
-void nexWertUebernehmen(long value)	{
+void nexWertUebernehmen(byte page, byte id, long value)	{
 	int vNeuerWert = (int)value;
 
-	switch (hmiPendingRequest)	{
-		case HMI_REQ_GWTAG:	{
-			int vVorTag = gwValueTag;											// Werte vor der Aenderung merken (checkGwBereich()
-			int vVorNacht = gwValueNacht;										// kann bei Bedarf BEIDE Grenzwerte anpassen
-			gwValueTag = vNeuerWert;
-			checkGwBereich();													// Tag/Nacht/Hysterese-Verhaeltnis pruefen und ggf. korrigieren
-			if ((gwValueTag != vVorTag) || (gwValueNacht != vVorNacht))	{		// Nur bei tatsaechlicher Aenderung...
-				speicherWrite();												// ...remanent sichern
-			}
-		} break;
-		case HMI_REQ_GWNACHT:	{
-			int vVorTag = gwValueTag;
-			int vVorNacht = gwValueNacht;
-			gwValueNacht = vNeuerWert;
-			checkGwBereich();
-			if ((gwValueTag != vVorTag) || (gwValueNacht != vVorNacht))	{
-				speicherWrite();
-			}
-		} break;
-		case HMI_REQ_LIGHTTIME:	{
-			int vVorher = lighttime;
-			lighttime = vNeuerWert;
-			checkMinMax(lighttime, MIN_LIGHTTIME, MAX_LIGHTTIME);
-			if (lighttime != vVorher)	{
-				speicherWrite();
-			}
-		} break;
-		case HMI_REQ_DIMM:	{
-			int vVorher = dimmlevel;
-			dimmlevel = vNeuerWert;
-			checkMinMax(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL);
-			if (dimmlevel != vVorher)	{
-				speicherWrite();
-			}
-		} break;
-		default:
-		break;
+	if ((page == NEX_PAGE_DAYLIGHT) && (id == NEX_CID_GWTAG))	{			// direkte Seite+ID-Zuordnung
+		int vVorTag = gwValueTag;											// Werte vor der Aenderung merken (checkGwBereich()
+		int vVorNacht = gwValueNacht;										// kann bei Bedarf BEIDE Grenzwerte anpassen
+		gwValueTag = vNeuerWert;
+		checkGwBereich();													// Tag/Nacht/Hysterese-Verhaeltnis pruefen und ggf. korrigieren
+		if ((gwValueTag != vVorTag) || (gwValueNacht != vVorNacht))	{		// Nur bei tatsaechlicher Aenderung...
+			speicherWrite();												// ...remanent sichern
+		}
 	}
-	hmiPendingRequest = HMI_NONE;											// Anfrage abgeschlossen
+	else if ((page == NEX_PAGE_DAYLIGHT) && (id == NEX_CID_GWNACHT))	{
+		int vVorTag = gwValueTag;
+		int vVorNacht = gwValueNacht;
+		gwValueNacht = vNeuerWert;
+		checkGwBereich();
+		if ((gwValueTag != vVorTag) || (gwValueNacht != vVorNacht))	{
+			speicherWrite();
+		}
+	}
+	else if ((page == NEX_PAGE_BOXLIGHT) && (id == NEX_CID_LIGHTTIME))	{
+		int vVorher = lighttime;
+		lighttime = vNeuerWert;
+		checkMinMax(lighttime, MIN_LIGHTTIME, MAX_LIGHTTIME);
+		if (lighttime != vVorher)	{
+			speicherWrite();
+		}
+	}
+	else if ((page == NEX_PAGE_BOXLIGHT) && (id == NEX_CID_DIMM))	{
+		int vVorher = dimmlevel;
+		dimmlevel = vNeuerWert;
+		checkMinMax(dimmlevel, MIN_DIMMLEVEL, MAX_DIMMLEVEL);
+		if (dimmlevel != vVorher)	{
+			speicherWrite();
+		}
+	}
 return;
 }
 
@@ -1237,38 +1227,64 @@ byte bitmaskStateAlarm()	{												// Alle Alarmzustaende in einer Bitmaske z
 		// case-Struktur gewaehlt, damit der Buffer der seriellen Schnittstelle (max. 64Byte) in einem einzelnen Durchlauf die loop() nicht blockiert
 		// Somit ist sichergestellt das jeder case in einem einzigen Durchlauf verarbeitet werden kann.
 		
-void hmiSend()	{
+void hmiSend()	{															// auf seitenbezogenen Versand umgebaut
 	static unsigned long vulTime = 0;
-	static byte vHmiSendIndex = 0;													// Index fuer Reihenfolge der naechsten Wert-Uebermittlung	
+	byte vAnzahlSeite = 1;													// Anzahl Werte auf der aktuellen Seite (fuer Rundlauf-Ende)
 
-	if ((millis() - vulTime >= hmiSendStepTime) && (hmiPendingRequest == HMI_NONE) && (hmiReceiveInProgress == false))	{	// Periodische Aktualisierung - PAUSIERT komplett, solange eine "get"-Antwort ausstehend ODER ein Telegramm noch am Eintreffen ist
+	if ((millis() - vulTime >= hmiSendStepTime) && (hmiReceiveInProgress == false))	{	// Periodische Aktualisierung - PAUSIERT waehrend ein Telegramm eintrifft
 		vulTime = millis();
-		
-		switch (vHmiSendIndex)	{
-			case 0:  nexSetValue(NEX_NAME_GWTAG, gwValueTag); break;
-			case 1:  nexSetValue(NEX_NAME_GWNACHT, gwValueNacht); break;
-			case 2:  nexSetValue(NEX_NAME_LIGHTTIME, lighttime); break;
-			case 3:  nexSetValue(NEX_NAME_DIMM, dimmlevel); break;
-			case 4:  nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue); break;			// Rohwert Tageslicht
-			case 5:  nexSetValue(NEX_NAME_ACTSTATETAG, stateTag); break;			// Tag/Nacht-Status
-			case 6:  nexSetValue(NEX_NAME_ACTMOTFUSE, motfuseRaw); break;			// Rohwert RM Motorsicherung
-			case 7:	 nexSetValue(NEX_NAME_ACTSTATEALARM, bitmaskStateAlarm()); break;		// Signalzustand der Alarmstaten (Bitmaske)
-			case 8:  nexSetValue(NEX_NAME_ACTBATTRAW, batterieRaw); break;			// Rohwert der Batteriespannung
-			case 9:  nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent); break;	// Prozentwert der Batterieladung
-			case 10:  nexSetValue(NEX_NAME_ACTSTATEINPUT, bitmaskStateInputs()); break;		// Schalterzustand der Inputs (Bitmaske)
-			case 11: nexSetValue(NEX_NAME_ACTSTATELICHT, outputs.Licht); break;		// Ausgangszustand Licht Stall
-			case 12: nexSetValue(NEX_NAME_ACTCYCLETIME, (long)cycleTime); break;	// Zykluszeit der CPU
-			case 13:	{															// Revisionsbezeichnung, z.B. "F05"
-				char vRevisionText[4];												// 1 Buchstabe + 2 Ziffern + Nullterminierung
-				vRevisionText[0] = REVISION_SCHEMA;
-				snprintf(&vRevisionText[1], sizeof(vRevisionText) - 1, "%02u", REVISION_CODE);	// %02u = immer 2-stellig, fuehrende Null
-				nexSetText(NEX_NAME_ACTREVISION, vRevisionText);
+
+		switch (currentPage)	{											// nur Werte der aktuell angezeigten Seite
+			case NEX_PAGE_MAIN:	{
+				vAnzahlSeite = 2;
+				switch (hmiSendIndex)	{
+					case 0:	 nexSetValue(NEX_NAME_ACTSTATEALARM, bitmaskStateAlarm()); break;	// Signalzustand der Alarmstaten (Bitmaske)
+					case 1:	{												// Revisionsbezeichnung, z.B. "F05"
+						char vRevisionText[4];								// 1 Buchstabe + 2 Ziffern + Nullterminierung
+						vRevisionText[0] = REVISION_SCHEMA;
+						snprintf(&vRevisionText[1], sizeof(vRevisionText) - 1, "%02u", REVISION_CODE);
+						nexSetText(NEX_NAME_ACTREVISION, vRevisionText);
+					} break;
+				}
+			} break;
+			case NEX_PAGE_DAYLIGHT:	{
+				vAnzahlSeite = 4;
+				switch (hmiSendIndex)	{
+					case 0: nexSetValue(NEX_NAME_ACTDAYLIGHT, lightvalue); break;		// Rohwert Tageslicht
+					case 1: nexSetValue(NEX_NAME_ACTSTATETAG, stateTag); break;			// Tag/Nacht-Status
+					case 2: nexSetValue(NEX_NAME_GWTAG, gwValueTag); break;
+					case 3: nexSetValue(NEX_NAME_GWNACHT, gwValueNacht); break;
+
+				}
+			} break;
+			case NEX_PAGE_BOXLIGHT:	{
+				vAnzahlSeite = 3;
+				switch (hmiSendIndex)	{
+					case 0: nexSetValue(NEX_NAME_DIMM, dimmlevel); break;
+					case 1: nexSetValue(NEX_NAME_LIGHTTIME, lighttime); break;
+					case 2: nexSetValue(NEX_NAME_ACTSTATELICHT, outputs.Licht); break;	// Ausgangszustand Licht Stall
+				}
+			} break;
+			case NEX_PAGE_SYSTEM:	{
+				vAnzahlSeite = 5;
+				switch (hmiSendIndex)	{
+					case 0: nexSetValue(NEX_NAME_ACTBATTRAW, batterieRaw); break;		// Rohwert der Batteriespannung
+					case 1: nexSetValue(NEX_NAME_ACTBATTLEVEL, batterieProzent); break;	// Prozentwert der Batterieladung
+					case 2: nexSetValue(NEX_NAME_ACTMOTFUSERAW, motfuseRaw); break;		// Rohwert RM Motorsicherung
+					case 3:	nexSetValue(NEX_NAME_ACTSTATEMOTFUSE, motfuseAlarm); break;	// Alarmzustand Motorsicherung
+					case 4: nexSetValue(NEX_NAME_ACTCYCLETIME, (long)cycleTime); break;	// Zykluszeit der CPU
+				}
+			} break;
+			case NEX_PAGE_INPUTS:	{
+				vAnzahlSeite = 1;
+				nexSetValue(NEX_NAME_ACTSTATEINPUT, bitmaskStateInputs());				// Schalterzustand der Inputs (Bitmaske)
 			} break;
 		}
-		vHmiSendIndex++;
-		if (vHmiSendIndex >= hmiAnzahlWerte)	{
-			vHmiSendIndex = 0;														// nach dem letzten Wert wieder von vorne
-		}			
+
+		hmiSendIndex++;
+		if (hmiSendIndex >= vAnzahlSeite)	{
+			hmiSendIndex = 0;															// nach dem letzten Wert dieser Seite wieder von vorne
+		}
 	}
 return;
 }
@@ -1292,6 +1308,14 @@ void displayanzeige()	{
 		
 		switch (vDebugSendIndex)	{
 			case 0:	{
+				Serial.print("Helligkeit:    ");							// ...Anzeige Rohwert aktueller Lichtwert "Tageslicht"
+				Serial.print(lightvalue);
+				Serial.print("     ");
+				Serial.print("Tagesstatus: ");								// ...Anzeige Status "Tag"
+				Serial.print(stateTag ? "Tag" : "Nacht");
+				Serial.println();
+			} break;
+			case 1:	{
 				Serial.print("Grenzwert Tag: ");							// ...Anzeige GW Tag
 				Serial.print(gwValueTag);
 				Serial.print("     ");
@@ -1299,7 +1323,8 @@ void displayanzeige()	{
 				Serial.print(gwValueNacht);
 				Serial.println();
 			} break;
-			case 1:	{
+
+			case 2:	{
 				Serial.print("Licht-Stall Einschaltdauer: ");				// ...Anzeige max.Einschaltzeit "Licht Stall"
 				Serial.print(lighttime);
 				Serial.print(" Sek.     ");
@@ -1308,21 +1333,13 @@ void displayanzeige()	{
 				Serial.print(" %");
 				Serial.println();
 			} break;
-			case 2:	{
-				Serial.print("Helligkeit: ");								// ...Anzeige Rohwert aktueller Lichtwert "Tageslicht"
-				Serial.print(lightvalue);
-				Serial.print("     ");
-				Serial.print("Tagesstatus: ");								// ...Anzeige Status "Tag"
-				Serial.print(stateTag ? "Tag" : "Nacht");
-				Serial.println();
-			} break;
 			case 3:	{
 				Serial.print("Spg.Motorsicherung: ");						// ...Anzeige Rohwert Messung "RM Motorsicherung"
 				Serial.print(motfuseRaw);
 				Serial.println();
 				} break;
 			case 4:	{
-				Serial.print("Batterieladung: ");							// ...Anzeige Rohwert Messung Batteriespannung
+				Serial.print("Batterieladung:     ");						// ...Anzeige Rohwert Messung Batteriespannung
 				Serial.print(batterieRaw);
 				Serial.print(" (");
 				Serial.print(batterieProzent);								// ...Anzeige Prozentwert Batterieladung
@@ -1351,6 +1368,24 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 7:	{
+				vbStateAlarms = bitmaskStateAlarm();							// ...Anzeige der Alarmstaten als reine Bitmaske
+				Serial.print("Alarmzustand (Bitmaske wie HMI): ");				// 4 Alarmquellen (siehe bitmaskStateAlarm())
+				for (byte i=0; i < 4; i++)	{
+					Serial.print(bitRead(vbStateAlarms, i));	}
+				Serial.println();
+			} break;
+			case 8:	{															// ...Anzeige der Alarmstaten als Text
+				Serial.print("  [skAlarm=");
+				Serial.print(skAlarm);
+				Serial.print("  motfuseAlarm=");
+				Serial.print(motfuseAlarm);
+				Serial.print("  safetyAlarm=");
+				Serial.print(safetyAlarm);
+				Serial.print("  batterieAlarm=");
+				Serial.print(batterieAlarm);
+				Serial.println("]");
+			} break;
+			case 9:	{
 				Serial.print("Ausgaenge:");									// ...Anzeige der aktuellen Ausgangssignale
 				Serial.print("  [MotAuf=");
 				Serial.print(outputs.MotAuf);
@@ -1362,24 +1397,6 @@ void displayanzeige()	{
 				Serial.print(outputs.Alarm);
 				Serial.print("  PowOn=");
 				Serial.print(outputs.PowOn);
-				Serial.println("]");
-			} break;
-			case 8:	{
-				vbStateAlarms = bitmaskStateAlarm();							// ...Anzeige der Alarmstaten als reine Bitmaske
-				Serial.print("Alarmzustand (Bitmaske wie HMI): ");				// 4 Alarmquellen (siehe bitmaskStateAlarm())
-				for (byte i=0; i < 4; i++)	{
-					Serial.print(bitRead(vbStateAlarms, i));	}
-				Serial.println();
-			} break;
-			case 9:	{															// ...Anzeige der Alarmstaten als Text
-				Serial.print("  [skAlarm=");
-				Serial.print(skAlarm);
-				Serial.print("  motfuseAlarm=");
-				Serial.print(motfuseAlarm);
-				Serial.print("  safetyAlarm=");
-				Serial.print(safetyAlarm);
-				Serial.print("  batterieAlarm=");
-				Serial.print(batterieAlarm);
 				Serial.println("]");
 			} break;
 			case 10:	{
