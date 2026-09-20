@@ -16,7 +16,7 @@
 /***	Korrektur Pinbelegung fuer Outputs (HW-PWM)				***/
 /***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
 /***	Alarmzustaende als Bitmaske an HMI senden				***/
-/***	Nextion-Kommunikatino umgebaut - NICHT abwaertskompatibel**/
+/***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel**/
 /***	Fehler PWM-Dimmstufe behoben (map()						***/
 /******************************************************************/
 
@@ -97,16 +97,16 @@ const unsigned long driveTime = 28000;		// maximale Fahrzeit vom Tor bis Endlage
 const unsigned long waitTime = 30000;		// zusaetzliche Wartezeit zur maximalen Fahrzeit vom Tor wenn ein "SafetyUp" ausgeloest wurde
 const unsigned long debugBootTime = 3000;	// Notwendige Haltezeit des Reset-Tasters bei Controllerstart	[in Millisekunden]
 
-const int DEF_GWVALNACHT = 100;				// Default Grenzwert Nacht-Status
-const int DEF_GWVALTAG = 300;				// Default Grenzwert Tag-Status
-const int MIN_GWBEREICH = 0;				// allgemein min. Analogwert
-const int MAX_GWBEREICH = 1024;				// allgemein max. Analogwert
-const int MIN_DIMMLEVEL = 1;				// min. PWM-Dimmstufe		[0%]
-const int MAX_DIMMLEVEL = 100;				// max. PWM-Dimmstufe		[100%]
-const int DEF_DIMMLEVEL = 50;				// Default PWM-Dimmstufe	[50%]
-const int MIN_LIGHTTIME = 2;				// min. Einschaltdauer		[1 Sekunden]
-const int MAX_LIGHTTIME = 1800;				// max. Einschaltdauer		[1800 Sekunden]
-const int DEF_LIGHTTIME = 10;				// Default Einschaltdauer	[10 Sekunden]
+const int DEF_GWVALNACHT = 100;				// Default Grenzwert Nacht-Status	[Integerwert]
+const int DEF_GWVALTAG = 300;				// Default Grenzwert Tag-Status		[Integerwert]
+const int MIN_GWBEREICH = 0;				// allgemein min. Analogwert		[Integerwert]
+const int MAX_GWBEREICH = 1024;				// allgemein max. Analogwert		[Integerwert]
+const int MIN_DIMMLEVEL = 1;				// min. PWM-Dimmstufe		[in %]
+const int MAX_DIMMLEVEL = 100;				// max. PWM-Dimmstufe		[in %]
+const int DEF_DIMMLEVEL = 50;				// Default PWM-Dimmstufe	[in %]
+const int MIN_LIGHTTIME = 2;				// min. Einschaltdauer		[in Sekunden]
+const int MAX_LIGHTTIME = 1800;				// max. Einschaltdauer		[in Sekunden]
+const int DEF_LIGHTTIME = 10;				// Default Einschaltdauer	[in Sekunden]
 											
 int gwValueNacht = DEF_GWVALNACHT;			// HMI-Grenzwertvorgabe fuer Helligkeit "NACHT"
 int gwValueTag = DEF_GWVALTAG;  			// HMI-Grenzwertvorgabe fuer Helligkeit "TAG"
@@ -235,7 +235,6 @@ byte nexErwarteteLaenge(byte cmd);
 void nexFrameAuswerten(byte* frame, byte len);
 void nexWertUebernehmen(byte page, byte id, long value);		// Signatur geaendert: page+id Kennung
 void nexEnde();
-void nexGetValue(const char* compName);
 void nexSetValue(const char* compName, long value);
 void nexSetText(const char* compName, const char* text);
 
@@ -482,7 +481,7 @@ void entprellen()	{
 			}
 		}else{																// sonst...
 			vaTaster[i].xMainstate = false;									// ...Hauptstatus "xy" in Array "vaTaster" auf FALSE
-			vaTaster[i].xState = false;										// ...und Laufzeit aktualisieren
+			vaTaster[i].xState = false;										// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 		}
 	}
 		
@@ -520,7 +519,7 @@ void daylight()	{
 			stateTag = true;                    							// 		...Hauptstatus "Tag" auf TRUE
 		}
     }else{																	// sonst...
-		vxStateTag = false;                  								// ...Laufzeit aktualisieren
+		vxStateTag = false;                  								// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 	}
  
 // Nachterkennung
@@ -533,7 +532,7 @@ void daylight()	{
 			stateTag = false;                   							// 		...Hauptstatus "Tag" auf FALSE
 		}
     }else{																	// sonst...                            
-		vxStateNacht = false;                								// ...Laufzeit aktualisieren
+		vxStateNacht = false;                								// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 	}
 return;	
 }
@@ -561,7 +560,7 @@ void motfuse()	{
 			motfuseAlarm = true;                    						// 		...Alarmstatus "Motorsicherung ausgeloest" auf TRUE
 		}
     }else{																	// sonst...
-		vxState = false;                  									// ...Laufzeit aktualisieren
+		vxState = false;                  									// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 	}
 return;
 }
@@ -590,7 +589,7 @@ void batterie()	{
 			batterieAlarm = true;                    						// 		...Alarmstatus "Batterieladung tief" setzen
 		}
     }else{																	// sonst...
-		vxState = false;                  									// ...Laufzeit aktualisieren
+		vxState = false;                  									// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 	}
 return;
 }
@@ -665,19 +664,18 @@ byte nexErwarteteLaenge(byte cmd)	{
 /******************************************************************************************************/
 /***	FC "UART-HMI: Daten empfangen"	***/
 
-		// #Nextion-Telegramme sind IMMER mit 3x 0xFF terminiert. Zwei Telegrammtypen werden ausgewertet:
-		//   0x65 <page> <component> <event>		-> Touch-Ereignis (event: 0=Release, 1=Press)
-		//   0x71 <b0> <b1> <b2> <b3>				-> Rueckgabewert einer "get"-Anfrage (int32 little-endian)
-		// Ablauf: Beim Loslassen einer bekannten Eingabekomponente wird per "get compname.val" aktiv nach dem
-		//  ...aktuellen Wert gefragt; die Antwort (0x71) wird dann dem zuvor gemerkten Parameter zugeordnet.
+		// #Nextion-Telegramme sind immer mit 3x 0xFF terminiert. Drei Telegrammtypen werden ausgewertet:
+		//   0x65 <page> <component> <event>		-> Touch-Ereignis (nur noch fuer den Lichttaster ausgewertet)
+		//   0x66 <page>							-> Seitenwechsel-Meldung ("sendme", siehe jede Seiten-Preinitialize)
+		//   0x73 <page> <id> <b0> <b1> <b2> <b3>	-> Direktuebertragung Seite+ID+Wert (Postinitialize eines Zahlenfeldes)
+		// Ablauf: Ein Zahlenfeld schickt nach Eingabe-Bestaetigung seinen neuen Wert direkt per 0x73 - kein "get" mehr noetig
 		//  ...Die Nutzlaenge wird anhand des Kommandobyte vorgegeben (nexErwarteteLaenge()),und so wird ein 0xFF-Byte innerhalb der
-		//  ...Nutzdaten (z.B. hohe int32-Werte oder negative Zahlen in Two's-Complement) korrekt als Datenbyte
-		//  ...uebernommen und nicht als Telegrammende gewertet. Nur nach Erreichen der erwarteten Nutzlaenge wird auf die 3x 0xFF-Terminierung geprueft. 
-		//  ...Kommt kein 0xFF, wird von einem Protokoll-Desync ausgegangen und das Telegramm verworfen (Resync).
+		//  ...Nutzdaten (z.B. hohe int32-Werte oder negative Zahlen in Two's-Complement) korrekt als Datenbyte uebernommen und nicht als Telegrammende gewertet.
+		//  ...Nur nach Erreichen der erwarteten Nutzlaenge wird auf die 3x 0xFF-Terminierung geprueft. Kommt kein 0xFF, wird von einem Protokoll-Desync ausgegangen und das Telegramm verworfen (Resync).
 
 void hmiRead()	{
 	static byte vBuf[16];													// Empfangspuffer fuer ein Telegramm (Kommandobyte inklusive)
-	static byte vBufLen = 0;													// Anzahl bereits empfangener Telegramm-Bytes
+	static byte vBufLen = 0;												// Anzahl bereits empfangener Telegramm-Bytes
 	static byte vErwarteteLaenge = 0;										// Erwartete Gesamtlaenge (inkl. Kommandobyte) des laufenden Telegramms
 	static byte vFFCount = 0;												// Zaehler aufeinanderfolgender 0xFF (nur fuer Terminator- bzw. Resync-Erkennung)
 	static NEX_PARSE_STATE vState = NEX_WAIT_CMD;							// Parser-Zustand (bleibt ueber Aufrufe hinweg erhalten)
@@ -841,14 +839,6 @@ return;
 
 void nexEnde()	{															// Standard-Telegrammende (3x 0xFF) senden
 	Serial.write(0xFF); Serial.write(0xFF); Serial.write(0xFF);
-return;
-}
-
-void nexGetValue(const char* compName)	{									// "get <component>.val" absenden
-	Serial.print("get ");
-	Serial.print(compName);
-	Serial.print(".val");
-	nexEnde();
 return;
 }
 
@@ -1224,8 +1214,8 @@ byte bitmaskStateAlarm()	{												// Alle Alarmzustaende in einer Bitmaske z
 /******************************************************************************************************/
 /***	FC "HMI Daten senden"	***/
 
-		// case-Struktur gewaehlt, damit der Buffer der seriellen Schnittstelle (max. 64Byte) in einem einzelnen Durchlauf die loop() nicht blockiert
-		// Somit ist sichergestellt das jeder case in einem einzigen Durchlauf verarbeitet werden kann.
+		// case-Struktur damit der Buffer der seriellen Schnittstelle (max. 64Byte) in einem einzelnen Durchlauf die loop() nicht blockiert.
+		// Zusaetzlich seitenbezogen aufgeteilt (aeusserer switch(currentPage)): es werden nur die Werte der aktuell auf dem Nextion angezeigten Seite gesendet.
 		
 void hmiSend()	{															// auf seitenbezogenen Versand umgebaut
 	static unsigned long vulTime = 0;
