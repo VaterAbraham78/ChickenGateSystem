@@ -1,7 +1,7 @@
 /******************************************************************/
 /***															***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V31		- im Code nachtragen		***/
+/***	Korrekturversion: V32		- im Code nachtragen		***/
 /***															***/
 /***															***/
 /***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
@@ -24,12 +24,8 @@
 /***																								***/
 /***	OFFENE CODEIMPLEMENTIERUNGEN																***/
 /***																								***/
-/***	Analogcomperator zwischen den Auslesezyklen ausschalten										***/
-/***	Auslesefreqeuenz Analogssignale senken (Zeitkritisch mit Messstrom und Ladekondensator		***/
-/***	Analogwert-Bezug anpassen gegen interne Referenz aufgrund ungleichmässiger Speisung der CPU	***/
 /***	Sleepfunktion umsetzen																		***/
 /***	Nextion-HMI via Analogausgang digital Ein/Ausschalten wegen Sleepmode-Konflikt				***/
-/***	Alarm-Reset nur auf steigende Flanke auswerten												***/
 /***																								***/
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -59,6 +55,7 @@ const byte OUTMotZu = 10;   				// Motorbefehl "Tor ZU"						(bistabiles Relais 
 const byte OUTLicht = 11;   				// Beleuchtung "Licht Stall" einschalten
 const byte OUTAlarm = 12;     				// Signal-LED "Alarm"
 const byte OUTPowOn = 13;  					// "Torsensoren/partielle Motorspeisung" einschalten
+const byte OUTNextionPower = A2;			// Einschalten Nextion-HMI-Speisung - A2 als Digital-Output verwendet
 
 const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstReset};// Array "arrPINIn" definieren und initialisieren
 const byte anzahlPINIn = sizeof(arrPINIn);														// Arraygroesse "arrPINIn" bestimmen (zwingend eine Konstante)
@@ -119,7 +116,9 @@ bool debugMode = false;						// Debug-Modus bei Controllerstart auswerten		[TRUE
 int dimmlevel = DEF_DIMMLEVEL;				// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
-const int averageCnt = 10;					// Anzahl Zyklen fuer Mittelwertbildung
+const int averageCnt = 10;					// Anzahl Messzyklen fuer Mittelwertbildung
+const unsigned long samplingTime = 500;		// Abtastrate der Analogmessungen (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
+const unsigned long resetHoldTimeNextion = 3000;	// Mindest-Haltezeit Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
 int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
 int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
 int batterieRaw = 0;						// aktueller Rohwert "Batteriespannung"
@@ -201,7 +200,7 @@ const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvari
 
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 31;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 32;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
 byte currentPage = NEX_PAGE_MAIN;								// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
@@ -240,6 +239,7 @@ void nexSetText(const char* compName, const char* text);
 
 /*** loop-Ablauf	***/
 void entprellen();
+void nextionPower();
 void daylight();
 void motfuse();
 void batterie();
@@ -276,6 +276,10 @@ void setup()	{
 	pinMode(OUTLicht, OUTPUT);    			// Licht "Stall" einschalten
 	pinMode(OUTAlarm, OUTPUT);    			// Signal-LED "Alarm"
 	pinMode(OUTPowOn, OUTPUT);				// Torsensoren/partielle Motorspeisung "einschalten"
+	pinMode(OUTNextionPower, OUTPUT);		// Nextion-HMI-Speisung einschalten
+		digitalWrite(OUTNextionPower, HIGH);// ...Startzustand EIN, damit bestehendes Verhalten (Nextion immer aktiv) erhalten bleibt
+	ACSR |= (1<<ACD);								// Analogkomparator dauerhaft abschalten - wird in diesem Projekt nicht verwendet (AIN0/AIN1)
+	DIDR0 |= (1<<ADC0D) | (1<<ADC4D) | (1<<ADC5D);	// Digitale Eingangspuffer der genutzten Analogpins (A0/A4/A5) dauerhaft abschalten
 	speicherRead();							// FC "Remanenter Speicher auslesen"
 }
 
@@ -283,6 +287,7 @@ void setup()	{
 
 void loop()	{
 	entprellen();							// FC "Taster entprellen"
+	nextionPower();							// FC "Nextion-Speisung via Reset-Taster einschalten"
 	daylight();								// FC "Messung Tageslicht"
 	motfuse();								// FC "Messung RM Motorsicherung"
 	batterie();								// FC "Messung Batteriespannung"
@@ -307,10 +312,14 @@ void loop()	{
 /***	INTERRUPT-ROUTINE	***/
 
 		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
-		// Ab Schritt 2 (Sleepmode): bleibt trotzdem leer - sie dient nur dem Aufwecken der CPU,
-		// die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
-		
+		// Ab Schritt 2 (Sleepmode): bleibt trotzdem leer - sie dient nur dem Aufwecken der CPU, die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
+
 void isrInterrupt()	{
+	// VORBEREITUNG Sleepmode (noch nicht umgesetzt) - hier muss beim Aufwachen ergaenzt werden:
+	// 1) ADCSRA |= (1<<ADEN);   ...ADC wieder einschalten (war waehrend Sleepmode deaktiviert, da in den meisten Sleepmodi - ausser Idle und ADC Noise Reduction nicht automatisch abgeschaltet wird)
+	// 2) Analogkomparator (ACD) braucht HIER keine Aktion - bleibt dauerhaft abgeschaltet (siehe setup())
+	// Beim EINTRITT in den Sleepmode (an anderer Stelle, ebenfalls noch zu ergaenzen):
+	//    ADCSRA &= ~(1<<ADEN);   ...ADC VOR dem Schlafenlegen explizit abschalten (siehe Punkt 1)
 	return;
 }
 
@@ -497,17 +506,44 @@ return;
 
 /******************************************************************************************************/
 /******************************************************************************************************/
+/***	FC "Nextion-Speisung via Reset-Taster einschalten"	***/
+
+void nextionPower()	{
+	static unsigned long vulHoldStart = 0;									// Zeitpunkt, seit dem der Reset-Taster durchgehend gehalten wird
+	static bool vxWasLow = true;											// true, solange der Taster seit dem letzten Loslassen noch nicht gedrueckt wurde
+
+	if (inputs.TstReset == true)	{										// Solange der Reset-Taster gehalten wird...
+		if (vxWasLow == true)	{											// ...beim allerersten Erkennen des Druecks...
+			vulHoldStart = millis();										// ...Startzeitpunkt der Haltedauer merken
+			vxWasLow = false;
+		}
+		if (millis() - vulHoldStart >= resetHoldTimeNextion)	{			// Wenn 3 Sekunden ununterbrochen gehalten dann...
+			digitalWrite(OUTNextionPower, HIGH);							// ...Nextion-Speisung einschalten (falls bereits an: keine Wirkung)
+		}
+	}else{																	// Taster losgelassen...
+		vxWasLow = true;													// ...Merker zuruecksetzen, damit die naechste Haltedauer neu gezaehlt wird
+	}
+return;
+}
+
+
+/******************************************************************************************************/
+/******************************************************************************************************/
 /***	FC "Messung Tageslicht"	***/
 
 void daylight()	{
 	static unsigned long vulTimeTag = 0;      								// laufende Hysteresezeit "Tag"
 	static unsigned long vulTimeNacht = 0;     						   		// laufende Hysteresezeit "Nacht"
+	static unsigned long vulMeasureTime = 0;								// laufende Abtastzeit
 	static bool vxStateTag = false;                			    			// laufender Status "Tag"
 	static bool vxStateNacht = false;            							// laufender Status "Nacht"
 	int vbnewValue = 0;														// aktueller Messwert
-  
-	vbnewValue = analogRead(INADaylight);									// Lichtwert aus Photosensor auslesen -> Integerwert 0..1024
-	lightvalue = (lightvalue * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung
+
+	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt des Abtastzeit tatsaechlich neu messen
+		vulMeasureTime = millis();
+		vbnewValue = analogRead(INADaylight);									// Lichtwert aus Photosensor auslesen -> Integerwert 0..1024
+		lightvalue = (lightvalue * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung
+	}
 
 // Tagerkennung
 	if (vxStateTag == false)  {                								// Wenn laufender Status "Tag" FALSE dann...
@@ -543,18 +579,22 @@ return;
 /***	FC "Messung RM Motorsicherung"	***/
 
 void motfuse()	{
-	static unsigned long vulTime = 0;      									// laufende Alarmverzoegerung "RM Motorsicherung""
+	static unsigned long vulTime = 0;      									// laufende Alarmverzoegerung "RM Motorsicherung"
+	static unsigned long vulMeasureTime = 0;								// laufende Abtastzeit
 	static bool vxState = false;                			    			// laufender Status "RM Motorsicherung""
 	int vbnewValue = 0;														// aktueller Messwert
-  
-	vbnewValue = analogRead(INAMotfuse);									// Sicherungsspannung messen -> Integerwert 0..1024
-	motfuseRaw = (motfuseRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
+
+	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt des Abtastzeit tatsaechlich neu messen
+		vulMeasureTime = millis();
+		vbnewValue = analogRead(INAMotfuse);									// Sicherungsspannung messen -> Integerwert 0..1024
+		motfuseRaw = (motfuseRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung
+	}
 
 // Zustand Motorsicherung ermitteln
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
 		vulTime = millis();             									// ...permanent die Laufzeit merken
 	}
-	if (motfuseRaw <= gwMotfuseRaw) {               						// Wenn Sicherungsspannung kleiner als Grenzwert dann...
+	if ((motfuseRaw <= gwMotfuseRaw) && (outputs.PowOn==true)) {			// Wenn Sicherungsspannung kleiner als GW und Motorspeisung AKTIV dann...
 		vxState = true;                 									// ...laufender Status auf TRUE
 		if (millis() - vulTime > motfuseAlaTime)  {    						// ...wenn Alarmverzoegerung erreicht dann...
 			motfuseAlarm = true;                    						// 		...Alarmstatus "Motorsicherung ausgeloest" auf TRUE
@@ -572,12 +612,16 @@ return;
 
 void batterie()	{
 	static unsigned long vulTime = 0;      									// laufende Alarmverzoegerung "Batterieladung"
+	static unsigned long vulMeasureTime = 0;								// laufende Abtastzeit
 	static bool vxState = false;                			    			// laufender Status "Batterieladung"
   	int vbnewValue = 0;														// aktueller Messwert
-    
-	vbnewValue = analogRead(INABatterie);									// Batteriespannung messen -> Integerwert 0..1024
-	batterieRaw = (batterieRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
-	batterieProzent = battAdcToPercent(batterieRaw);						// Ladezustand in Prozent ableiten
+
+	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt des Abtastzeit tatsaechlich neu messen
+		vulMeasureTime = millis();
+		vbnewValue = analogRead(INABatterie);									// Batteriespannung messen -> Integerwert 0..1024
+		batterieRaw = (batterieRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
+		batterieProzent = battAdcToPercent(batterieRaw);						// Ladezustand in Prozent ableiten
+	}
 
 // Alarm Batterieladung ermitteln
 	if (vxState == false)  {                								// Wenn laufender Status FALSE dann...
@@ -1154,6 +1198,7 @@ void alarmhandling()	{
 	unsigned long vulBlinkTimeShort = 0;									// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
 	unsigned long vulBlinkTimeHalf = 0;										// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
 	unsigned long vulBlinkTimeLong = 0;										// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
+	static bool vxOldReset = false;											// vorheriger Zustand des Reset-Tasters (Flankenerkennung)
 		
 // Alarm-LED blinken lassen
 	if ((skAlarm == true) || (motfuseAlarm == true))	{					// Wenn Alarmstatus "Schrittkettenablauf" oder "RM Motorsicherung" auf TRUE dann...
@@ -1184,13 +1229,14 @@ void alarmhandling()	{
 	}
 	
 // Alarme ruecksetzen
-	if (inputs.TstReset == true)  {                   						// Wenn Taster "Reset" TRUE dann...
+	if ((inputs.TstReset == true) && (vxOldReset == false))  {				// Wenn Taster "Reset" auf positive Flanke TRUE dann...
 		skAlarm = false;													// ...Alarmstatus "Schrittketten-Ablaufstoerung" resetieren
 		motfuseAlarm = false;												// ...Alarmstatus "Motorsicherung ausgeloest" resetieren
 		safetyAlarm = false;												// ...Alarmstatus "Fahrfehler Tor" resetieren
 		cntSafetyFail = 0;													// ...Zaehler "Fahrfehler Tor" resetieren
 		batterieAlarm = false;												// ...Alarmstatus "Batterieladung tief" resetieren								
 	}
+	vxOldReset = inputs.TstReset;											// ...Zustand Flankenerkennung merken	
 return;
 }
 
