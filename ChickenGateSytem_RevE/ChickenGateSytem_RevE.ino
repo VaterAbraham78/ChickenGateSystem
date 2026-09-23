@@ -1,23 +1,22 @@
 /******************************************************************/
 /***															***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V32		- im Code nachtragen		***/
+/***	Korrekturversion: V33		- im Code nachtragen		***/
 /***															***/
 /***															***/
 /***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
+/***	Reset-Taster: Mehrfachfunktion (Debug / Reset / Nextion	***/
 /***	Debug-Mode fuer serielle Ausgabe bei CPU-Start waehlbar	***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
 /***	Pruefung & Korrektur von HMI-Grenzwertparametern		***/
 /***	Sensorspeisung KEIN bistabiles Relais mehr				***/
-/***	Reset-Taster: KEINE Mehrfachfunktion mehr vorhanden		***/
 /***	Statusmeldungen via HMI-Anzeigefelder					***/
-/***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button	***/
-/***	Hardware-PWM " Licht-Stall" umgesetzt					***/
-/***	Korrektur Pinbelegung fuer Outputs (HW-PWM)				***/
-/***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
 /***	Alarmzustaende als Bitmaske an HMI senden				***/
-/***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel**/
+/***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button	***/
+/***	"Licht Stall" mit Hardware-PWM umgesetzt				***/
 /***	Fehler PWM-Dimmstufe behoben (map()						***/
+/***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
+/***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel**/
 /******************************************************************/
 
 /******************************************************************************************************/
@@ -25,14 +24,20 @@
 /***	OFFENE CODEIMPLEMENTIERUNGEN																***/
 /***																								***/
 /***	Sleepfunktion umsetzen																		***/
-/***	Nextion-HMI via Analogausgang digital Ein/Ausschalten wegen Sleepmode-Konflikt				***/
+/***	Vorgeschlagene Schritt-Reihenfolge
+/***	1) Watchdog-Timer-Grundgerüst (Sleepmode-Eintritt/Austritt, WDT-Interrupt, Sammelinterrupt-Anbindung) – ohne die Helligkeits-/GW-Logik, erstmal nur die Infrastruktur
+/***	2) "Darf schlafen?"-Sammelbedingung (Torsteuerung, Licht, HMI-Kommunikation, ggf. Alarme)
+/***	3) mit 5s/photoTime-Logik ins Sleep-Entscheidungsschema integrieren
+/***	4) Sleeping-Zeit als neuer GW-Parameter (EEPROM, Default, HMI-Feld)
+/*** 	5) Abschaltung (bereits vorbereitete OUTNextionPower-Logik einbinden)
 /***																								***/
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	BIBLIOTHEKEN	***/
 
-#include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der HMI-Eingabeparameter
-
+#include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der Parameter
+#include <avr/sleep.h>						// Sleepmode-Funktionen (sleep_cpu(), sleep_enable() etc.)
+#include <avr/wdt.h>						// Watchdog-Timer-Funktionen fuer periodisches Aufwecken aus dem Sleepmode
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -49,7 +54,7 @@ const byte INSafety2 = 4;   				// Infrarotsensor "Safety-2-Aussen"
 const byte INTstTorAuf = 5;  				// Taster "Tor AUF"
 const byte INTstTorZu = 6;   				// Taster "Tor ZU"
 const byte INTstLicht = 7;					// Taster "Licht Stall"
-const byte INTstReset = 8;    				// Taster "Reset"
+const byte INTstMultiReset = 8;    			// Taster "Multifunktion-Reset"
 const byte OUTMotAuf = 9;					// Motorbefehl "Tor AUF"					(bistabiles Relais mit 2 Spulen)
 const byte OUTMotZu = 10;   				// Motorbefehl "Tor ZU"						(bistabiles Relais mit 2 Spulen)
 const byte OUTLicht = 11;   				// Beleuchtung "Licht Stall" einschalten
@@ -57,7 +62,7 @@ const byte OUTAlarm = 12;     				// Signal-LED "Alarm"
 const byte OUTPowOn = 13;  					// "Torsensoren/partielle Motorspeisung" einschalten
 const byte OUTNextionPower = A2;			// Einschalten Nextion-HMI-Speisung - A2 als Digital-Output verwendet
 
-const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstReset};// Array "arrPINIn" definieren und initialisieren
+const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstMultiReset};// Array "arrPINIn" definieren und initialisieren
 const byte anzahlPINIn = sizeof(arrPINIn);														// Arraygroesse "arrPINIn" bestimmen (zwingend eine Konstante)
 const byte arrPINOut[] = {OUTMotAuf, OUTMotZu, OUTAlarm, OUTPowOn};								// Array "arrPINOut" definieren und initialisieren (OUTLicht als HW-PWM, daher NICHT im Array)
 const byte anzahlPINOut = sizeof(arrPINOut);													// Arraygroesse "arrPINOut" bestimmen (zwingend eine Konstante)
@@ -68,15 +73,19 @@ struct strINPUT	{																				// Struktur-Architektur fuer Eingaenge defi
 	bool TstTorAuf;
 	bool TstTorZu;
 	bool TstLicht;
-	bool TstReset;
+	bool TstMultiReset;
 }	inputs = {false, false, false, false, false, false};										// 		...Struktur-Variable "inputs" erstellen und initialisieren
+struct strTSTFUNC	{																			// Struktur-Architektur fuer Taster "Multifunktion-Reset" definieren
+	bool Reset;																					// 		...Tasterfunktion "Alarm-Reset" aus "inputs.TstMultiReset" erkannt
+	bool Nextion;																				// 		...Tasterfunktion "Nextion-HMI" aus "inputs.TstMultiReset" erkannt
+}	TstFunc = {false, false};																	// 		...Struktur-Variable "TstFunc" erstellen und initialisieren
 struct strOUTPUT	{																			// Struktur-Architektur fuer Ausgaenge definieren
 	bool MotAuf;
 	bool MotZu;
 	bool Licht;
 	bool Alarm;
 	bool PowOn;
-}	outputs = {false, false, false, false, false};												// 		...Struktur-Variable "outputs" erstellen und initialisieren	
+}	outputs = {false, false, false, false, false};												// 		...Struktur-Variable "outputs" erstellen und initialisieren
 struct strBLINK	{																				// Sruktur-Architektur fuer verschiedene Blinkzeiten definieren
 	unsigned long MainOn;
 	unsigned long MainOff;
@@ -118,7 +127,7 @@ int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in
 
 const int averageCnt = 10;					// Anzahl Messzyklen fuer Mittelwertbildung
 const unsigned long samplingTime = 500;		// Abtastrate der Analogmessungen (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
-const unsigned long resetHoldTimeNextion = 3000;	// Mindest-Haltezeit Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
+const unsigned long holdTimeNextion = 3000;	// Min.Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
 int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
 int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
 int batterieRaw = 0;						// aktueller Rohwert "Batteriespannung"
@@ -196,11 +205,8 @@ const char NEX_NAME_ACTSTATEMOTFUSE[] = "pSystem.vaMotfuse";	// Name der Hilfsva
 const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefeld "Zykluszeit der CPU"
 const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
 
-
-
-
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 32;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 33;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
 byte currentPage = NEX_PAGE_MAIN;								// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
@@ -223,6 +229,8 @@ const unsigned long hmiReceiveTimeout = 200;					// Sicherheitsabschaltung falls
 
 /*** Ausserhalb loop	***/
 void isrInterrupt();
+void wdtSetup8s();												// Watchdog-Timer auf ~8s Interrupt-Modus konfigurieren (kein Reset)
+void sleepNow();												// CPU in Power-down-Sleepmode versetzen
 void checkDebugMode();
 void speicherRead();
 void speicherWrite();
@@ -239,6 +247,7 @@ void nexSetText(const char* compName, const char* text);
 
 /*** loop-Ablauf	***/
 void entprellen();
+void tasterfunktion();
 void nextionPower();
 void daylight();
 void motfuse();
@@ -270,7 +279,7 @@ void setup()	{
 	pinMode(INTstTorAuf, INPUT);			// Taster "Tor AUF"
 	pinMode(INTstTorZu, INPUT); 			// Taster "Tor ZU"
 	pinMode(INTstLicht, INPUT);				// Taster "Licht Stall"
-	pinMode(INTstReset, INPUT);    			// Taster "Reset"
+	pinMode(INTstMultiReset, INPUT);   		// Taster "Multifunktion-Reset"
 	pinMode(OUTMotAuf, OUTPUT);   			// Motorbefehl "Tor AUF"					(bistabiles Relais mit 2 Spulen)
 	pinMode(OUTMotZu, OUTPUT);    			// Motorbefehl "Tor ZU"						(bistabiles Relais mit 2 Spulen)
 	pinMode(OUTLicht, OUTPUT);    			// Licht "Stall" einschalten
@@ -287,7 +296,8 @@ void setup()	{
 
 void loop()	{
 	entprellen();							// FC "Taster entprellen"
-	nextionPower();							// FC "Nextion-Speisung via Reset-Taster einschalten"
+	tasterfunktion();						// FC "Tasterfunktion erkennen"
+	nextionPower();							// FC "Nextion-HMI einschalten"
 	daylight();								// FC "Messung Tageslicht"
 	motfuse();								// FC "Messung RM Motorsicherung"
 	batterie();								// FC "Messung Batteriespannung"
@@ -311,16 +321,44 @@ void loop()	{
 /******************************************************************************************************/
 /***	INTERRUPT-ROUTINE	***/
 
-		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
-		// Ab Schritt 2 (Sleepmode): bleibt trotzdem leer - sie dient nur dem Aufwecken der CPU, die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
-
 void isrInterrupt()	{
-	// VORBEREITUNG Sleepmode (noch nicht umgesetzt) - hier muss beim Aufwachen ergaenzt werden:
-	// 1) ADCSRA |= (1<<ADEN);   ...ADC wieder einschalten (war waehrend Sleepmode deaktiviert, da in den meisten Sleepmodi - ausser Idle und ADC Noise Reduction nicht automatisch abgeschaltet wird)
-	// 2) Analogkomparator (ACD) braucht HIER keine Aktion - bleibt dauerhaft abgeschaltet (siehe setup())
-	// Beim EINTRITT in den Sleepmode (an anderer Stelle, ebenfalls noch zu ergaenzen):
-	//    ADCSRA &= ~(1<<ADEN);   ...ADC VOR dem Schlafenlegen explizit abschalten (siehe Punkt 1)
-	return;
+	ADCSRA |= (1<<ADEN);						// ADC wieder einschalten (war waehrend Sleepmode bewusst deaktiviert nicht automatisch abgeschaltet)
+												// Analogkomparator (ACD) braucht keine Aktion - bleibt dauerhaft abgeschaltet (siehe setup())
+return;
+}
+
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/***	FC "Sleepmode: Watchdog + Ein-/Austritt"	***/
+
+		// WICHTIG: millis()/micros() laufen waehrend SLEEP_MODE_PWR_DOWN NICHT weiter (Timer0 steht still)
+
+void wdtSetup8s()	{
+	cli();															// Interrupts kurz sperren (zeitkritische Watchdog-Umkonfiguration)
+	wdt_reset();													// Watchdog-Zaehler zuruecksetzen
+	MCUSR &= ~(1<<WDRF);											// Watchdog-Reset-Flag loeschen (sonst startet WDT im Reset- statt Interrupt-Modus)
+	WDTCSR |= (1<<WDCE) | (1<<WDE);									// Aenderungsmodus freischalten (muss binnen 4 Taktzyklen gefolgt werden)
+	WDTCSR = (1<<WDP3) | (1<<WDP0);									// Timeout auf ~8s stellen (WDP3+WDP0 gesetzt), WDE dabei NICHT gesetzt -> kein Reset-Modus
+	WDTCSR |= (1<<WDIE);											// Nur Interrupt, kein Chip-Reset - Watchdog-Interrupt aktivieren
+	sei();															// Interrupts wieder freigeben
+return;
+}
+
+ISR(WDT_vect)	{													// Wird bei jedem WDT-Timeout (~8s) automatisch aufgerufen
+																	// Leer -> reicht bereits aus, um die CPU aus SLEEP_MODE_PWR_DOWN aufzuwecken.
+																	// Wird in einem spaeteren Schritt erweitert (Zaehler zur Verkettung mehrerer 8s-Zyklen fuer laengere Schlafzeiten).
+}
+
+void sleepNow()	{													// Zentrale Sleepmode-Ein-/Austrittsfunktion
+	ADCSRA &= ~(1<<ADEN);											// ADC VOR dem Schlafenlegen explizit abschalten (siehe isrInterrupt())
+	wdtSetup8s();													// Watchdog fuer ~8s-Aufwachzyklus konfigurieren
+	set_sleep_mode(SLEEP_MODE_PWR_DOWN);							// Stromsparendster Modus (Timer0/millis() steht dabei still!)
+	sleep_enable();
+	sleep_cpu();													// ...hier schlaeft die CPU, bis WDT-Interrupt ODER Sammelinterrupt sie weckt
+	sleep_disable();												// ...ab hier laeuft der Code nach dem Aufwachen normal weiter
+	ADCSRA |= (1<<ADEN);											// ADC wieder einschalten (redundant zu isrInterrupt(), falls durch WDT statt Sammelinterrupt geweckt)
+return;
 }
 
 
@@ -333,16 +371,16 @@ void isrInterrupt()	{
 
 void checkDebugMode()	{
 	unsigned long vulStartZeit = 0;
-	pinMode(INTstReset, INPUT);												// Muss bereits vor der Initialisierung als Eingang konfiguriert sein
+	pinMode(INTstMultiReset, INPUT);										// Muss bereits vor der Initialisierung als Eingang konfiguriert sein
 
-	if (digitalRead(INTstReset) == LOW)	{									// Taster beim Start nicht gedrueckt dann...
+	if (digitalRead(INTstMultiReset) == LOW)	{							// Taster beim Start nicht gedrueckt dann...
 		debugMode = false;													// ...sofort Nextion-Modus, kein Warten noetig
 		return;
 	}
 	debugMode = true;														// Annahme: Debug-Modus aktivieren -> bestaetigt wenn Taster durchgehend gehalten wird
 	vulStartZeit = millis();
 	while (millis() - vulStartZeit < debugBootTime)	{
-		if (digitalRead(INTstReset) == LOW)	{								// Wenn Taster vorzeitig losgelassen wird dann...
+		if (digitalRead(INTstMultiReset) == LOW)	{						// Wenn Taster vorzeitig losgelassen wird dann...
 			debugMode = false;												// ...dann Nextion-Modus, kein Warten noetig
 			return;
 		}
@@ -499,29 +537,52 @@ void entprellen()	{
 	inputs.TstTorAuf = vaTaster[2].xMainstate;
 	inputs.TstTorZu = vaTaster[3].xMainstate;
 	inputs.TstLicht = vaTaster[4].xMainstate;
-	inputs.TstReset = vaTaster[5].xMainstate;
+	inputs.TstMultiReset = vaTaster[5].xMainstate;
 return;
 }
 
 
 /******************************************************************************************************/
 /******************************************************************************************************/
-/***	FC "Nextion-Speisung via Reset-Taster einschalten"	***/
+/***	FC "Tasterfunktion erkennen"	***/
+
+void tasterfunktion()	{
+	static unsigned long vulTime = 0;										// momentane Laufzeit
+	static bool vxState = false;											// laufender Status
+	static bool vxOldState = false;											// vorheriger Status
+	
+	if (vxState == false)		{											// Wenn laufender Status "vxState" FALSE dann...													
+		vulTime = millis();													// ...permanent die Laufzeit merken
+	}
+	if (inputs.TstMultiReset == true)	{									// Wenn Taster "Multifunktion-Reset" gedrueckt dann...
+		vxState = true;														// ...laufender Status "vxState" auf TRUE											
+		vxOldState = true;													// ...vorheriger Status "vxOldState" auf TRUE (alter Schaltzustand merken)
+			if (millis() - vulTime >= holdTimeNextion)	{					// ...wenn Erkennungszeit erreicht dann...						
+				TstFunc.Nextion = true;										// 		...Tasterfunktion "Nextion-HMI einschalten" erkannt
+				vxOldState = false;											// 		...vorheriger Status "vxOldState" zuruecksetzen da kein Impulsvorgang getaetigt
+			}	
+	}else{																	// sonst... 
+		vxState = false;													// ...Laufzeit aktualisieren														
+		TstFunc.Nextion = false;											// ...und "Nextion-HMI einschalten" auf FALSE setzen (kurzer Tastdruck = "Alarm-Reset")
+	}
+	if (vxState == false && vxOldState == true)	{							// Wenn Taster losgelassen wird dann... (negative Flanke)
+		TstFunc.Reset = true;												// ...Tasterfunktion "Alarm-Reset" erkannt (positive Flanke setzen)
+		vxOldState = false;													// ...und "alter Schaltzustand" wieder zuruecksetzen
+	}else{																	// sonst... 
+		TstFunc.Reset = false;												// ...Tasterfunktion "Alarm-Reset" zuruecksetzen
+	}
+return;
+}	
+
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/***	FC "Nextion-HMI einschalten"	***/
 
 void nextionPower()	{
-	static unsigned long vulHoldStart = 0;									// Zeitpunkt, seit dem der Reset-Taster durchgehend gehalten wird
-	static bool vxWasLow = true;											// true, solange der Taster seit dem letzten Loslassen noch nicht gedrueckt wurde
 
-	if (inputs.TstReset == true)	{										// Solange der Reset-Taster gehalten wird...
-		if (vxWasLow == true)	{											// ...beim allerersten Erkennen des Druecks...
-			vulHoldStart = millis();										// ...Startzeitpunkt der Haltedauer merken
-			vxWasLow = false;
-		}
-		if (millis() - vulHoldStart >= resetHoldTimeNextion)	{			// Wenn 3 Sekunden ununterbrochen gehalten dann...
+	if (TstFunc.Nextion == true)	{										// Wenn Tasterfunktion "Nextion-HMI einschalten" erkannt dann...
 			digitalWrite(OUTNextionPower, HIGH);							// ...Nextion-Speisung einschalten (falls bereits an: keine Wirkung)
-		}
-	}else{																	// Taster losgelassen...
-		vxWasLow = true;													// ...Merker zuruecksetzen, damit die naechste Haltedauer neu gezaehlt wird
 	}
 return;
 }
@@ -539,7 +600,7 @@ void daylight()	{
 	static bool vxStateNacht = false;            							// laufender Status "Nacht"
 	int vbnewValue = 0;														// aktueller Messwert
 
-	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt des Abtastzeit tatsaechlich neu messen
+	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt der Abtastzeit messen
 		vulMeasureTime = millis();
 		vbnewValue = analogRead(INADaylight);									// Lichtwert aus Photosensor auslesen -> Integerwert 0..1024
 		lightvalue = (lightvalue * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung
@@ -1198,7 +1259,6 @@ void alarmhandling()	{
 	unsigned long vulBlinkTimeShort = 0;									// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
 	unsigned long vulBlinkTimeHalf = 0;										// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
 	unsigned long vulBlinkTimeLong = 0;										// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
-	static bool vxOldReset = false;											// vorheriger Zustand des Reset-Tasters (Flankenerkennung)
 		
 // Alarm-LED blinken lassen
 	if ((skAlarm == true) || (motfuseAlarm == true))	{					// Wenn Alarmstatus "Schrittkettenablauf" oder "RM Motorsicherung" auf TRUE dann...
@@ -1229,14 +1289,13 @@ void alarmhandling()	{
 	}
 	
 // Alarme ruecksetzen
-	if ((inputs.TstReset == true) && (vxOldReset == false))  {				// Wenn Taster "Reset" auf positive Flanke TRUE dann...
+	if (TstFunc.Reset)  {													// Wenn Tasterfunktion "Reset" (Ursprung positive Flanke) TRUE dann...
 		skAlarm = false;													// ...Alarmstatus "Schrittketten-Ablaufstoerung" resetieren
 		motfuseAlarm = false;												// ...Alarmstatus "Motorsicherung ausgeloest" resetieren
 		safetyAlarm = false;												// ...Alarmstatus "Fahrfehler Tor" resetieren
 		cntSafetyFail = 0;													// ...Zaehler "Fahrfehler Tor" resetieren
 		batterieAlarm = false;												// ...Alarmstatus "Batterieladung tief" resetieren								
 	}
-	vxOldReset = inputs.TstReset;											// ...Zustand Flankenerkennung merken	
 return;
 }
 
@@ -1248,7 +1307,7 @@ return;
 byte bitmaskStateInputs()	{												// Alle Inputsignale in einer Bitmaske zusammenfassen		
 	
 	return (inputs.Safety1 << 0) | (inputs.Safety2 << 1) | (inputs.TstTorAuf << 2)
-		 | (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstReset << 5);
+		 | (inputs.TstTorZu << 3) | (inputs.TstLicht << 4) | (inputs.TstMultiReset << 5);
 }
 
 byte bitmaskStateAlarm()	{												// Alle Alarmzustaende in einer Bitmaske zusammenfassen
@@ -1400,7 +1459,7 @@ void displayanzeige()	{
 				Serial.print("  Licht=");
 				Serial.print(inputs.TstLicht);
 				Serial.print("  Reset=");
-				Serial.print(inputs.TstReset);
+				Serial.print(inputs.TstMultiReset);
 				Serial.println("]");
 			} break;
 			case 7:	{

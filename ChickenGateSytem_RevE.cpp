@@ -1,7 +1,7 @@
 /******************************************************************/
 /***															***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V32		- im Code nachtragen		***/
+/***	Korrekturversion: V33		- im Code nachtragen		***/
 /***															***/
 /***															***/
 /***	Sleepmode fuer Energieeinsparung (noch nicht umgesetzt)	***/
@@ -19,23 +19,14 @@
 /***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel**/
 /******************************************************************/
 
-/******************************************************************************************************/
-/***																								***/
-/***	OFFENE CODEIMPLEMENTIERUNGEN																***/
-/***																								***/
-/***	Sleepfunktion umsetzen																		***/
-/***	Vorgeschlagene Schritt-Reihenfolge
-/***	1) Watchdog-Timer-Grundgerüst (Sleepmode-Eintritt/Austritt, WDT-Interrupt, Sammelinterrupt-Anbindung) – ohne die Helligkeits-/GW-Logik, erstmal nur die Infrastruktur
-/***	2) "Darf schlafen?"-Sammelbedingung (Torsteuerung, Licht, HMI-Kommunikation, ggf. Alarme)
-/***	3) mit 5s/photoTime-Logik ins Sleep-Entscheidungsschema integrieren
-/***	4) Sleeping-Zeit als neuer GW-Parameter (EEPROM, Default, HMI-Feld)
-/*** 	5) Abschaltung (bereits vorbereitete OUTNextionPower-Logik einbinden)
-/***																								***/
+
 /******************************************************************************************************/
 /******************************************************************************************************/
 /***	BIBLIOTHEKEN	***/
 
-#include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der HMI-Eingabeparameter
+#include <EEPROM.h>							// Einbinden der EEPROM-Bibliothek fuer remanente Speicherung der Parameter
+#include <avr/sleep.h>						// Sleepmode-Funktionen (sleep_cpu(), sleep_enable() etc.)
+#include <avr/wdt.h>						// Watchdog-Timer-Funktionen fuer periodisches Aufwecken aus dem Sleepmode
 
 
 /******************************************************************************************************/
@@ -161,6 +152,13 @@ unsigned long debugStepTime = serMonitorTime / anzahlZeilenanzeige;		// Zeitabst
 
 unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
 
+// Hilfsvariablen fuer den Sleepmode
+unsigned long vulLastNextionActivity = 0;	// Zeitpunkt der letzten Seitenaenderung/Parameteruebermittlung des Nextion-HMI
+const unsigned long nextionIdleTime = 60000;// Minimale Inaktivitaetszeit des Nextion-HMI bevor Sleep erlaubt ist	[in Millisekunden]
+bool sleepBlockDaylight = false;			// Platzhalter fuer spaeteren Schritt der Tageslichtmessung mit echter Logik befuellt (5s/photoTime-Fenster)
+bool motfuseAlarmPending = false;			// Spiegelt "vxState" aus motfuse() - Alarmverzoegerung laeuft
+bool batterieAlarmPending = false;			// Spiegelt "vxState" aus batterie() - Alarmverzoegerung laeuft
+
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -205,7 +203,7 @@ const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefel
 const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 32;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 33;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
 byte currentPage = NEX_PAGE_MAIN;								// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
@@ -228,6 +226,9 @@ const unsigned long hmiReceiveTimeout = 200;					// Sicherheitsabschaltung falls
 
 /*** Ausserhalb loop	***/
 void isrInterrupt();
+void wdtSetup8s();												// Watchdog-Timer auf ~8s Interrupt-Modus konfigurieren (kein Reset)
+void sleepNow();												// CPU in Power-down-Sleepmode versetzen
+bool sleepAllowed();											// Freigabe Sleepmode - prueft alle Ausschlusskriterien
 void checkDebugMode();
 void speicherRead();
 void speicherWrite();
@@ -318,16 +319,77 @@ void loop()	{
 /******************************************************************************************************/
 /***	INTERRUPT-ROUTINE	***/
 
-		// Schritt 1: keine Funktion noetig, da noch kein sleep_cpu() aufgerufen wird.
-		// Ab Schritt 2 (Sleepmode): bleibt trotzdem leer - sie dient nur dem Aufwecken der CPU, die eigentliche Auswertung erfolgt wie bisher ueber entprellen()/arrPINIn im Hauptprogramm.
-
 void isrInterrupt()	{
-	// VORBEREITUNG Sleepmode (noch nicht umgesetzt) - hier muss beim Aufwachen ergaenzt werden:
-	// 1) ADCSRA |= (1<<ADEN);   ...ADC wieder einschalten (war waehrend Sleepmode deaktiviert, da in den meisten Sleepmodi - ausser Idle und ADC Noise Reduction nicht automatisch abgeschaltet wird)
-	// 2) Analogkomparator (ACD) braucht HIER keine Aktion - bleibt dauerhaft abgeschaltet (siehe setup())
-	// Beim EINTRITT in den Sleepmode (an anderer Stelle, ebenfalls noch zu ergaenzen):
-	//    ADCSRA &= ~(1<<ADEN);   ...ADC VOR dem Schlafenlegen explizit abschalten (siehe Punkt 1)
-	return;
+	ADCSRA |= (1<<ADEN);						// ADC wieder einschalten (war waehrend Sleepmode bewusst deaktiviert nicht automatisch abgeschaltet)
+												// Analogkomparator (ACD) braucht keine Aktion - bleibt dauerhaft abgeschaltet (siehe setup())
+return;
+}
+
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/***	FC "Sleepmode: Watchdog + Ein-/Austritt"	***/
+
+		// WICHTIG: millis()/micros() laufen waehrend SLEEP_MODE_PWR_DOWN NICHT weiter (Timer0 steht still)
+
+void wdtSetup8s()	{
+	cli();															// Interrupts kurz sperren (zeitkritische Watchdog-Umkonfiguration)
+	wdt_reset();													// Watchdog-Zaehler zuruecksetzen
+	MCUSR &= ~(1<<WDRF);											// Watchdog-Reset-Flag loeschen (sonst startet WDT im Reset- statt Interrupt-Modus)
+	WDTCSR |= (1<<WDCE) | (1<<WDE);									// Aenderungsmodus freischalten (muss binnen 4 Taktzyklen gefolgt werden)
+	WDTCSR = (1<<WDP3) | (1<<WDP0);									// Timeout auf ~8s stellen (WDP3+WDP0 gesetzt), WDE dabei NICHT gesetzt -> kein Reset-Modus
+	WDTCSR |= (1<<WDIE);											// Nur Interrupt, kein Chip-Reset - Watchdog-Interrupt aktivieren
+	sei();															// Interrupts wieder freigeben
+return;
+}
+
+ISR(WDT_vect)	{													// Wird bei jedem WDT-Timeout (~8s) automatisch aufgerufen
+																	// Leer -> reicht bereits aus, um die CPU aus SLEEP_MODE_PWR_DOWN aufzuwecken.
+																	// Wird in einem spaeteren Schritt erweitert (Zaehler zur Verkettung mehrerer 8s-Zyklen fuer laengere Schlafzeiten).
+}
+
+void sleepNow()	{													// Zentrale Sleepmode-Ein-/Austrittsfunktion
+	ADCSRA &= ~(1<<ADEN);											// ADC VOR dem Schlafenlegen explizit abschalten (siehe isrInterrupt())
+	wdtSetup8s();													// Watchdog fuer ~8s-Aufwachzyklus konfigurieren
+	set_sleep_mode(SLEEP_MODE_PWR_DOWN);							// Stromsparendster Modus (Timer0/millis() steht dabei still!)
+	sleep_enable();
+	sleep_cpu();													// ...hier schlaeft die CPU, bis WDT-Interrupt ODER Sammelinterrupt sie weckt
+	sleep_disable();												// ...ab hier laeuft der Code nach dem Aufwachen normal weiter
+	ADCSRA |= (1<<ADEN);											// ADC wieder einschalten (redundant zu isrInterrupt(), falls durch WDT statt Sammelinterrupt geweckt)
+return;
+}
+
+bool sleepAllowed()	{												// Sleepmode-Sammelbedingung - alle Punkte muessen erfuellt sein
+																	// HINWEIS: speicherRead()/speicherWrite() brauchen keine eigene Pruefung da loop() sie synchron/blockierend aufruft.
+																	// Dadurch kann der Sleep-Check niemals waehrend eines laufenden EEPROM-Zugriffs erreicht werden.
+	if (debugMode == true)	{										// Debug-Modus aktiv (USB/Serial Monitor im Einsatz)
+		return false;
+	}
+	if (bitmaskStateInputs() != 0)	{								// Irgendein digitaler Eingang steht auf HIGH (deckt Entprellung mitten im Wechsel sowie Safety1/2 waehrend Torschliessung implizit mit ab)
+		return false;
+	}
+	if (hmiReceiveInProgress == true)	{							// Ein Nextion-Telegramm wird gerade byteweise empfangen
+		return false;
+	}
+	if ((millis() - vulLastNextionActivity) < nextionIdleTime)	{	// Nextion war innerhalb der letzten 60s aktiv (Seitenwechsel/Parameter)
+		return false;
+	}
+	if (sleepBlockDaylight == true)	{								// Tageslichtmessung laeuft (Details folgen in einem spaeteren Schritt)
+		return false;
+	}
+	if (schrittTor != STANDBY)	{									// Torsteuerung nicht im Ruhezustand (faehrt/wartet/etc.)
+		return false;
+	}
+	if (outputs.MotAuf || outputs.MotZu || outputs.Licht || outputs.Alarm || outputs.PowOn)	{	// Irgendein Ausgang aktiv
+		return false;
+	}
+	if (skAlarm || motfuseAlarm || safetyAlarm || batterieAlarm)	{	// Irgendein Alarm aktiv
+		return false;
+	}
+	if (motfuseAlarmPending || batterieAlarmPending)	{			// Alarm-Verzoegerung laeuft noch (Grenzwert verletzt, Alarm noch nicht ausgeloest)
+		return false;
+	}
+return true;														// Keine der obigen Bedingungen traf zu -> Freigabe Sleepmode
 }
 
 
@@ -632,6 +694,7 @@ void motfuse()	{
     }else{																	// sonst...
 		vxState = false;                  									// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 	}
+	motfuseAlarmPending = vxState;											// ...global spiegeln fuer sleepAllowed()
 return;
 }
 
@@ -665,6 +728,7 @@ void batterie()	{
     }else{																	// sonst...
 		vxState = false;                  									// ...Status zuruecksetzen (Laufzeit wird im naechsten Durchlauf neu gesetzt)
 	}
+	batterieAlarmPending = vxState;											// ...global spiegeln fuer sleepAllowed()
 return;
 }
 
@@ -836,6 +900,7 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 	if (len == 0)	{
 		return;
 	}
+	vulLastNextionActivity = millis();										// ...jedes ausgewertete Telegramm zaehlt als Nextion-Aktivitaet fuer sleepAllowed()
 
 	if ((frame[0] == 0x65) && (len >= 4))	{								// Touch-Ereignis: 0x65, page, component, event - nur noch fuer den Lichttaster gebraucht
 		byte vPageId = frame[1];
