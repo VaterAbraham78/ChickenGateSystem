@@ -1544,15 +1544,23 @@ void displayanzeige()	{
 	}
 	
 	if (sleepAllowed() == true)	{											// Testausgabe fuer Sleepmode
-		Serial.println("--> Freigabe Sleepmode...");
-		Serial.print("    millis() vor dem Schlafen: ");
+		Serial.print("--> CPU-Laufzeit Sleepmode vor dem Schlafen...");
 		Serial.println(millis());
+		Serial.println("");
 		Serial.flush();														// WICHTIG: Sendepuffer VOR dem Schlafen vollstaendig leeren, sonst bleiben Bytes haengen
 		sleepNow();
 		if (wdtWoke == true)	{											// Geweckt durch WDT-Timeout -> vollstaendiger ~8s-Zyklus abgelaufen
 			Serial.println("<-- aufgewacht durch WDT (~8 Sekunden Sleep abgeschlossen)");
-		}else{																// Geweckt durch Sammelinterrupt -> vorzeitig, weniger als 8s WDT-Timeout
-			Serial.println("<-- aufgewacht durch Sammelinterrupt (vorzeitig, < 8 Sekunden)");	/***CHANGE - neu ***/
+			Serial.print("<-- CPU-Laufzeit Sleepmode nach dem Schlafen...");
+			Serial.println(millis());
+			Serial.println("");
+		}else if (interruptWoke)	{																// Geweckt durch Sammelinterrupt -> vorzeitig, weniger als 8s WDT-Timeout
+			Serial.println("<-- aufgewacht durch Sammelinterrupt (vorzeitig, < 8 Sekunden)");
+			Serial.print("<-- CPU-Laufzeit Sleepmode nach dem Schlafen...");
+			Serial.println(millis());
+			Serial.println("");
+		}else{
+			Serial.println("<-- aufgewacht, aber weder WDT noch Sammelinterrupt erkannt (unerwartet!)");
 		}
 	}
 return;

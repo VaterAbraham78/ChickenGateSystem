@@ -156,6 +156,7 @@ unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
 unsigned long vulLastNextionActivity = 0;	// Zeitpunkt der letzten Seitenaenderung/Parameteruebermittlung des Nextion-HMI
 const unsigned long nextionIdleTime = 60000;// Minimale Inaktivitaetszeit des Nextion-HMI bevor Sleep erlaubt ist	[in Millisekunden]
 volatile bool wdtWoke = false;				// TRUE = durch WDT-Timeout (~8s) geweckt, FALSE = durch Sammelinterrupt (vorzeitig) geweckt
+volatile bool interruptWoke = false;		// ISR fuer den externen Hardware-Interrupt auf steigende Flanke
 bool sleepBlockDaylight = false;			// Platzhalter fuer spaeteren Schritt der Tageslichtmessung mit echter Logik befuellt (5s/photoTime-Fenster)
 bool motfuseAlarmPending = false;			// Spiegelt "vxState" aus motfuse() - Alarmverzoegerung laeuft
 bool batterieAlarmPending = false;			// Spiegelt "vxState" aus batterie() - Alarmverzoegerung laeuft
@@ -272,7 +273,6 @@ void setup()	{
 	checkDebugMode();						// Debug-Mode pruefen
 	Serial.begin(9600);						// Serial Port für Anzeige oeffnen
 	pinMode(INInterrupt, INPUT);			// Sammel-Interrupt fuer Sleepmode
-		attachInterrupt(digitalPinToInterrupt(INInterrupt), isrInterrupt, RISING);		// Interrupt aus Sleepmode
 	pinMode(INSafety1, INPUT);				// Infrarotsensor "Safety-1-Innen"
 	pinMode(INSafety2, INPUT);    			// Infrarotsensor "Safety-2-Aussen"
 	pinMode(INTstTorAuf, INPUT);			// Taster "Tor AUF"
@@ -322,7 +322,7 @@ void loop()	{
 
 void isrInterrupt()	{
 	ADCSRA |= (1<<ADEN);						// ADC wieder einschalten (war waehrend Sleepmode bewusst deaktiviert nicht automatisch abgeschaltet)
-												// Analogkomparator (ACD) braucht keine Aktion - bleibt dauerhaft abgeschaltet (siehe setup())
+	interruptWoke = true;						// Merker-Flag für das Hauptprogramm setzen
 return;
 }
 
@@ -333,30 +333,33 @@ return;
 
 		// WICHTIG: millis()/micros() laufen waehrend SLEEP_MODE_PWR_DOWN NICHT weiter (Timer0 steht still)
 
+ISR(WDT_vect)	{													// Wird bei jedem WDT-Timeout (~8s) automatisch aufgerufen
+	wdtWoke = true;													// ...WDT stellt in diesem Fall die Weckquelle dar (im Gegensatz zum Sammelinterrupt)
+																	// Wird in einem spaeteren Schritt erweitert (Zaehler zur Verkettung mehrerer 8s-Zyklen fuer laengere Schlafzeiten).
+}
+
 void wdtSetup8s()	{
 	cli();															// Interrupts kurz sperren (zeitkritische Watchdog-Umkonfiguration)
 	wdt_reset();													// Watchdog-Zaehler zuruecksetzen
 	MCUSR &= ~(1<<WDRF);											// Watchdog-Reset-Flag loeschen (sonst startet WDT im Reset- statt Interrupt-Modus)
 	WDTCSR |= (1<<WDCE) | (1<<WDE);									// Aenderungsmodus freischalten (muss binnen 4 Taktzyklen gefolgt werden)
-	WDTCSR = (1<<WDP3) | (1<<WDP0);									// Timeout auf ~8s stellen (WDP3+WDP0 gesetzt), WDE dabei NICHT gesetzt -> kein Reset-Modus
-	WDTCSR |= (1<<WDIE);											// Nur Interrupt, kein Chip-Reset - Watchdog-Interrupt aktivieren
+	WDTCSR = (1<<WDIE) | (1<<WDP3) | (1<<WDP0);						// Watchdog-Interrupt aktivieren und Timeout auf ~8s stellen
 	sei();															// Interrupts wieder freigeben
 return;
-}
-
-ISR(WDT_vect)	{													// Wird bei jedem WDT-Timeout (~8s) automatisch aufgerufen
-	wdtWoke = true;													// ...WDT stellt in diesem Fall die Weckquelle dar (im Gegensatz zum Sammelinterrupt)
-																	// Wird in einem spaeteren Schritt erweitert (Zaehler zur Verkettung mehrerer 8s-Zyklen fuer laengere Schlafzeiten).
 }
 
 void sleepNow()	{													// Zentrale Sleepmode-Ein-/Austrittsfunktion
 	ADCSRA &= ~(1<<ADEN);											// ADC VOR dem Schlafenlegen explizit abschalten (siehe isrInterrupt())
 	wdtSetup8s();													// Watchdog fuer ~8s-Aufwachzyklus konfigurieren
 	wdtWoke = false;												// ...Weckgrund-Flag zuruecksetzen, bevor die CPU schlafen geht	
+	interruptWoke = false;											// ...Interrupt-Pin-Flag zuruecksetzen, bevor die CPU schlafen geht	
+	attachInterrupt(digitalPinToInterrupt(INInterrupt), isrInterrupt, RISING);		// HW-Interrupt aktivieren
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN);							// Stromsparendster Modus (Timer0/millis() steht dabei still!)
 	sleep_enable();
 	sleep_cpu();													// ...hier schlaeft die CPU, bis WDT-Interrupt ODER Sammelinterrupt sie weckt
 	sleep_disable();												// ...ab hier laeuft der Code nach dem Aufwachen normal weiter
+	wdt_disable();              									// ...Watchdog deaktivieren damit kein weiterer ausgeführt werden kann
+	detachInterrupt(digitalPinToInterrupt(INInterrupt));			// HW-Interrupt deaktivieren
 	ADCSRA |= (1<<ADEN);											// ADC wieder einschalten (redundant zu isrInterrupt(), falls durch WDT statt Sammelinterrupt geweckt)
 return;
 }
@@ -1541,15 +1544,21 @@ void displayanzeige()	{
 	}
 	
 	if (sleepAllowed() == true)	{											// Testausgabe fuer Sleepmode
-		Serial.println("--> Freigabe Sleepmode...");
-		Serial.print("    millis() vor dem Schlafen: ");
+		Serial.print("--> CPU-Laufzeit Sleepmode vor dem Schlafen...");
 		Serial.println(millis());
+		Serial.println("");
 		Serial.flush();														// WICHTIG: Sendepuffer VOR dem Schlafen vollstaendig leeren, sonst bleiben Bytes haengen
 		sleepNow();
 		if (wdtWoke == true)	{											// Geweckt durch WDT-Timeout -> vollstaendiger ~8s-Zyklus abgelaufen
 			Serial.println("<-- aufgewacht durch WDT (~8 Sekunden Sleep abgeschlossen)");
-		}else{																// Geweckt durch Sammelinterrupt -> vorzeitig, weniger als 8s WDT-Timeout
-			Serial.println("<-- aufgewacht durch Sammelinterrupt (vorzeitig, < 8 Sekunden)");	/***CHANGE - neu ***/
+			Serial.print("<-- CPU-Laufzeit Sleepmode nach dem Schlafen...");
+			Serial.println(millis());
+			Serial.println("");
+		}else if (interruptWoke)	{																// Geweckt durch Sammelinterrupt -> vorzeitig, weniger als 8s WDT-Timeout
+			Serial.println("<-- aufgewacht durch Sammelinterrupt (vorzeitig, < 8 Sekunden)");
+			Serial.print("<-- CPU-Laufzeit Sleepmode nach dem Schlafen...");
+			Serial.println(millis());
+			Serial.println("");
 		}
 	}
 return;
