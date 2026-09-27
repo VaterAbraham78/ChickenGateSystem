@@ -119,9 +119,9 @@ int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in
 const int averageCnt = 10;					// Anzahl Messzyklen fuer Mittelwertbildung
 const unsigned long samplingTime = 500;		// Abtastrate der Analogmessungen (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
 const unsigned long holdTimeNextion = 3000;	// Min.Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
-int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
+int motfuseRaw = 1024;							// aktueller Rohwert "RM Motorsicherung"
 int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
-int batterieRaw = 0;						// aktueller Rohwert "Batteriespannung"
+int batterieRaw = 1024;						// aktueller Rohwert "Batteriespannung"
 int gwBatterieRaw = 810;					// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
 int batterieProzent = 0;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
 
@@ -160,7 +160,9 @@ volatile bool wdtWoke = false;				// TRUE = durch WDT-Timeout (~8s) geweckt, FAL
 volatile bool interruptWoke = false;		// ISR fuer den externen Hardware-Interrupt auf steigende Flanke
 bool sleepBlockNextion = false;				// Kommunikationspruefung des Nextion-HMI fuer Sleepmode
 bool sleepBlockDaylight = false;			// Platzhalter fuer spaeteren Schritt der Tageslichtmessung mit echter Logik befuellt (5s/photoTime-Fenster)
-bool entprellungAmLaufen = false;			// TRUE, solange irgendein Eingang mitten in der Entprellung steckt (Rohwert weicht vom letzten entprellten Wert ab)	/***CHANGE - neu ***/
+bool entprellungAmLaufen = false;			// TRUE, solange irgendein Eingang mitten in der Entprellung steckt (Rohwert weicht vom letzten entprellten Wert ab)
+unsigned long diagLichtUlTime = 0;			// Diagnose: interner "ulTime"-Wert von entprellen() fuer den Licht-Eingang (Index 4)		/***CHANGE - neu ***/
+bool diagLichtLastRaw = false;				// Diagnose: interner "xLastRaw"-Wert von entprellen() fuer den Licht-Eingang (Index 4)	/***CHANGE - neu ***/	/***CHANGE - neu ***/
 bool motfuseAlarmPending = false;			// Spiegelt "vxState" aus motfuse() - Alarmverzoegerung laeuft
 bool batterieAlarmPending = false;			// Spiegelt "vxState" aus batterie() - Alarmverzoegerung laeuft
 
@@ -573,6 +575,8 @@ void entprellen()	{																						/***CHANGE - symmetrische Entprellung, 
 	entprellungAmLaufen = vxAmLaufen;										// ...global spiegeln, damit sleepAllowed() waehrend einer laufenden			/***CHANGE - neu ***/
 												// Entprellung NICHT einschlafen kann (verhindert das "Einfrieren mitten	/***CHANGE - neu ***/
 												// im Uebergang" bei einem knapp vor dem Sleep wechselnden Signal)			/***CHANGE - neu ***/
+	diagLichtUlTime = vaTaster[4].ulTime;										// Diagnose: interner Zustand des Licht-Eingangs fuer beleuchtung() sichtbar	/***CHANGE - neu ***/
+	diagLichtLastRaw = vaTaster[4].xLastRaw;										/***CHANGE - neu ***/
 		
 	inputs.Safety1 = vaTaster[0].xMainstate;								// Ergebnisse aus for-Schleife den spezifischen Komponenten der Struktur "inputs.xy" zuweisen
 	inputs.Safety2 = vaTaster[1].xMainstate;
@@ -1291,7 +1295,12 @@ void beleuchtung()	{
 			Serial.print(" -> vxState=");										/***CHANGE - neu ***/
 			Serial.print(vxState);												/***CHANGE - neu ***/
 			Serial.print(" millis=");											/***CHANGE - neu ***/
-			Serial.println(millis());											/***CHANGE - neu ***/
+			Serial.print(millis());											/***CHANGE - Zeile ergaenzt, kein println mehr ***/
+			Serial.print(" [intern: ulTime=");									/***CHANGE - neu ***/
+			Serial.print(diagLichtUlTime);										/***CHANGE - neu ***/
+			Serial.print(" xLastRaw=");											/***CHANGE - neu ***/
+			Serial.print(diagLichtLastRaw);										/***CHANGE - neu ***/
+			Serial.println("]");												/***CHANGE - neu ***/
 			vxLastPrinted = vxState;											/***CHANGE - neu ***/
 		}
 	}
@@ -1307,6 +1316,7 @@ return;
 
 void ausgaenge()	{
 	bool vaOutputs[anzahlPINOut] = {outputs.MotAuf, outputs.MotZu, outputs.Alarm, outputs.PowOn, outputs.NextionOn};		// Struct-Variable in Array uebergeben
+	static bool vxLichtPrinted = false;										// Diagnose: letzter ausgegebener Zustand (vermeidet Dauerflut)		/***CHANGE - neu ***/
 
 	for (byte i = 0; i < anzahlPINOut; i++)	{								// for-Schlaufe mit n-Durchlaeufen fuer n-Ausgaenge
 		digitalWrite(arrPINOut[i], vaOutputs[i] ? HIGH : LOW);				// Array-Wert dem jeweiligen Hardware-Ausgang zuweisen
@@ -1316,6 +1326,15 @@ void ausgaenge()	{
 		analogWrite(OUTLicht, map(dimmlevel, 0, 100, 0, 255));				// Dimmstufe 0..100% auf PWM-Tastgrad 0..255 abbilden
 	}else{
 		analogWrite(OUTLicht, 0);
+	}
+	if ((debugMode == true) && (outputs.Licht != vxLichtPrinted))	{			// Diagnose: PWM-Register direkt nach dem Schreiben auslesen				/***CHANGE - neu ***/
+		Serial.print("[Diag-PWM] outputs.Licht=");								/***CHANGE - neu ***/
+		Serial.print(outputs.Licht);											/***CHANGE - neu ***/
+		Serial.print(" analogWrite-Wert=");									/***CHANGE - neu ***/
+		Serial.print(map(dimmlevel, 0, 100, 0, 255));							/***CHANGE - neu ***/
+		Serial.print(" OCR2A(tatsaechliches Register)=");						/***CHANGE - neu ***/
+		Serial.println(OCR2A);													/***CHANGE - neu ***/
+		vxLichtPrinted = outputs.Licht;											/***CHANGE - neu ***/
 	}
 return;
 }
