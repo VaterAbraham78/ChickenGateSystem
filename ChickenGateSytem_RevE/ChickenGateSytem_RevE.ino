@@ -119,9 +119,9 @@ int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in
 const int averageCnt = 10;					// Anzahl Messzyklen fuer Mittelwertbildung
 const unsigned long samplingTime = 500;		// Abtastrate der Analogmessungen (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
 const unsigned long holdTimeNextion = 3000;	// Min.Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
-int motfuseRaw = 1024;							// aktueller Rohwert "RM Motorsicherung"
+int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
 int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
-int batterieRaw = 1024;						// aktueller Rohwert "Batteriespannung"
+int batterieRaw = 0;						// aktueller Rohwert "Batteriespannung"
 int gwBatterieRaw = 810;					// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
 int batterieProzent = 0;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
 
@@ -1330,10 +1330,15 @@ void ausgaenge()	{
 	if ((debugMode == true) && (outputs.Licht != vxLichtPrinted))	{			// Diagnose: PWM-Register direkt nach dem Schreiben auslesen				/***CHANGE - neu ***/
 		Serial.print("[Diag-PWM] outputs.Licht=");								/***CHANGE - neu ***/
 		Serial.print(outputs.Licht);											/***CHANGE - neu ***/
-		Serial.print(" analogWrite-Wert=");									/***CHANGE - neu ***/
-		Serial.print(map(dimmlevel, 0, 100, 0, 255));							/***CHANGE - neu ***/
-		Serial.print(" OCR2A(tatsaechliches Register)=");						/***CHANGE - neu ***/
-		Serial.println(OCR2A);													/***CHANGE - neu ***/
+		Serial.print(" geschrieben=");											/***CHANGE - Text korrigiert, zeigt jetzt den tatsaechlich geschriebenen Wert ***/
+		Serial.print(outputs.Licht ? map(dimmlevel, 0, 100, 0, 255) : 0);			/***CHANGE - Fehler behoben: zeigte bisher immer map(), auch im Else-Zweig ***/
+		Serial.print(" OCR2A=");												/***CHANGE - neu ***/
+		Serial.print(OCR2A);													/***CHANGE - neu ***/
+		Serial.print(" TCCR2A=0b");												/***CHANGE - neu ***/
+		for (byte b = 8; b > 0; b--)	{ Serial.print(bitRead(TCCR2A, b-1)); }		/***CHANGE - neu, zeigt u.a. COM2A1 (Bit7) - Pin<->Timer-Verbindung ***/
+		Serial.print(" TCCR2B=0b");												/***CHANGE - neu ***/
+		for (byte b = 8; b > 0; b--)	{ Serial.print(bitRead(TCCR2B, b-1)); }		/***CHANGE - neu, zeigt u.a. CS2[2:0] (Bit2-0) - Taktquelle/Prescaler ***/
+		Serial.println("");													/***CHANGE - neu ***/
 		vxLichtPrinted = outputs.Licht;											/***CHANGE - neu ***/
 	}
 return;
