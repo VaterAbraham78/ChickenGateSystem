@@ -1,24 +1,23 @@
-/******************************************************************/
-/***															***/
-/***	ChickenGateSystem Rev.E		- im Code nachtragen		***/
-/***	Korrekturversion: V35		- im Code nachtragen		***/
-/***															***/
-/***															***/
-/***	Sleepmode fuer Energieeinsparung						***/
-/***	Funktion entprellen() geaendert							***/
-/***	Reset-Taster: Mehrfachfunktion (Debug / Reset / Nextion	***/
-/***	Debug-Mode fuer serielle Ausgabe bei CPU-Start waehlbar	***/
-/***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung			***/
-/***	Pruefung & Korrektur von HMI-Grenzwertparametern		***/
-/***	Sensorspeisung KEIN bistabiles Relais mehr				***/
-/***	Statusmeldungen via HMI-Anzeigefelder					***/
-/***	Alarmzustaende als Bitmaske an HMI senden				***/
-/***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button	***/
-/***	"Licht Stall" mit Hardware-PWM umgesetzt				***/
-/***	Fehler PWM-Dimmstufe behoben (map()						***/
-/***	UART-Kommunikation Nextion-Touchpanel angepasst			***/
-/***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel**/
-/******************************************************************/
+/******************************************************************************************************/
+/***																								***/
+/***	ChickenGateSystem Rev.E		- im Code nachtragen											***/
+/***	Korrekturversion: V36		- im Code nachtragen											***/
+/***																								***/
+/***																								***/
+/***	Sleepmode fuer Energieeinsparung mit PWR_DOWN-Modus											***/
+/***	Funktion entprellen() geaendert	(prueft steigend & fallende Flanke fuer Erkennung			***/
+/***	Reset-Taster: Mehrfachfunktion je nach Tastdruck-Laenge	(Debug / Reset / Nextion)			***/
+/***	Debug-Mode fuer serielle Ausgabe bei CPU-Start waehlbar	durch Reset-Taster					***/
+/***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung												***/
+/***	Pruefung & Korrektur von HMI-Grenzwertparametern											***/
+/***	Sensorspeisung KEIN bistabiles Relais mehr													***/
+/***	Statusmeldungen via HMI-Anzeigefelder														***/
+/***	Alarmzustaende wird als Bitmaske an das HMI gesendet										***/
+/***	zusaetzliche Tastereingabe "Licht Stall" via HMI-Button										***/
+/***	"Licht Stall" mit Hardware-PWM umgesetzt													***/
+/***	UART-Kommunikation Nextion-Touchpanel angepasst												***/
+/***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel									***/
+/******************************************************************************************************/
 
 
 /******************************************************************************************************/
@@ -34,9 +33,9 @@
 /******************************************************************************************************/
 /***	DEKLARATIONEN	***/
 
-const byte INADaylight = A0;   				// Analogwert Messung "Tageslicht"			-> Integerwert 0..1024
-const byte INAMotfuse = A4;  				// Analogwert Messung "RM Motorsicherung"	-> Integerwert 0..1024
-const byte INABatterie = A5;  				// Analogwert Messung "Batteriespannung"	-> Integerwert 0..1024
+const byte INADaylight = A0;   				// Analogwert Messung "Tageslicht"			-> Integerwert 0..1023
+const byte INAMotfuse = A4;  				// Analogwert Messung "RM Motorsicherung"	-> Integerwert 0..1023
+const byte INABatterie = A5;  				// Analogwert Messung "Batteriespannung"	-> Integerwert 0..1023
 
 const byte INInterrupt = 2;					// Sammel-Interrupt fuer Sleepmode (INT0) - NICHT in Array "arrPINIn" eingebunden
 
@@ -78,7 +77,7 @@ struct strOUTPUT	{																			// Struktur-Architektur fuer Ausgaenge defi
 	bool PowOn;
 	bool NextionOn;
 }	outputs = {false, false, false, false, false, false};										// 		...Struktur-Variable "outputs" erstellen und initialisieren
-struct strBLINK	{																				// Sruktur-Architektur fuer verschiedene Blinkzeiten definieren
+struct strBLINK	{																				// Struktur-Architektur fuer verschiedene Blinkzeiten definieren
 	unsigned long MainOn;
 	unsigned long MainOff;
 	unsigned long BattOn;
@@ -98,7 +97,7 @@ const unsigned long debugBootTime = 3000;	// Notwendige Haltezeit des Reset-Tast
 const int DEF_GWVALNACHT = 100;				// Default Grenzwert Nacht-Status	[Integerwert]
 const int DEF_GWVALTAG = 300;				// Default Grenzwert Tag-Status		[Integerwert]
 const int MIN_GWBEREICH = 0;				// allgemein min. Analogwert		[Integerwert]
-const int MAX_GWBEREICH = 1024;				// allgemein max. Analogwert		[Integerwert]
+const int MAX_GWBEREICH = 1023;				// allgemein max. Analogwert		[Integerwert]
 const int MIN_DIMMLEVEL = 1;				// min. PWM-Dimmstufe		[in %]
 const int MAX_DIMMLEVEL = 100;				// max. PWM-Dimmstufe		[in %]
 const int DEF_DIMMLEVEL = 50;				// Default PWM-Dimmstufe	[in %]
@@ -120,11 +119,11 @@ int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in
 const int averageCnt = 10;					// Anzahl Messzyklen fuer Mittelwertbildung
 const unsigned long samplingTime = 500;		// Abtastrate der Analogmessungen (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
 const unsigned long holdTimeNextion = 3000;	// Min.Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
-int motfuseRaw = 1024;						// aktueller Rohwert "RM Motorsicherung"
+int motfuseRaw = 1023;						// aktueller Rohwert "RM Motorsicherung"			[Startwert = 1023 um Initialalarm zu verhindern]
 int gwMotfuseRaw = 546;						// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
-int batterieRaw = 1024;						// aktueller Rohwert "Batteriespannung"
+int batterieRaw = 1023;						// aktueller Rohwert "Batteriespannung"				[Startwert = 1023 um Initialalarm zu verhindern]
 int gwBatterieRaw = 810;					// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
-int batterieProzent = 100;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
+int batterieProzent = 0;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
 
 int cntSafetyFail = 0;						// laufender Zaehler "Fahrfehler Tor"
 int gwSafetyFail = 3;						// Grenzwert Anzahl erlaubter "Fahrfehler Tor" bis Alarm ausgeloest wird
@@ -155,15 +154,17 @@ unsigned long debugStepTime = serMonitorTime / anzahlZeilenanzeige;		// Zeitabst
 unsigned long cycleTime = 0;				// aktuelle Zykluszeit								[in Microsekunden]
 
 // Hilfsvariablen fuer den Sleepmode
-unsigned long lastNextionActivity = 0;		// Zeitpunkt der letzten Seitenaenderung/Parameteruebermittlung des Nextion-HMI
-const unsigned long nextionIdleTime = 10000;// Minimale Inaktivitaetszeit des Nextion-HMI bevor Sleep erlaubt ist	[in Millisekunden]
-volatile bool wdtWoke = false;				// TRUE = durch WDT-Timeout (~8s) geweckt, FALSE = durch Sammelinterrupt (vorzeitig) geweckt
-volatile bool interruptWoke = false;		// ISR fuer den externen Hardware-Interrupt auf steigende Flanke
-bool sleepBlockNextion = false;				// Kommunikationspruefung des Nextion-HMI fuer Sleepmode
+const unsigned long nextionIdleTime = 10000;// Inaktivitaetszeit des Nextion-HMI bevor Speisung abgeschaltet wird	[in Millisekunden]
+const unsigned long nextionBootTime = 1000;	// Anlaufzeit des Nextion nach dem Einschalten, um Startseite anzufragen und Daten zu senden
+unsigned long lastNextionActivity = 0;		// Zeitpunkt der letzten Aktivitaet des Nextion-HMI
+unsigned long nextionOnTime = 0;			// Zeitpunkt, an dem die Nextion-Speisung zuletzt eingeschaltet wurde
+bool nextionPageForced = false;				// TRUE = Startseite wurde seit dem letzten Einschalten bereits erzwungen
 bool sleepBlockDaylight = false;			// Platzhalter fuer spaeteren Schritt der Tageslichtmessung mit echter Logik befuellt (5s/photoTime-Fenster)
-bool entprellungAmLaufen = false;			// TRUE, solange irgendein Eingang mitten in der Entprellung steckt (Rohwert weicht vom letzten entprellten Wert ab)
 bool motfuseAlarmPending = false;			// Spiegelt "vxState" aus motfuse() - Alarmverzoegerung laeuft
 bool batterieAlarmPending = false;			// Spiegelt "vxState" aus batterie() - Alarmverzoegerung laeuft
+
+volatile bool wdtWoke = false;				// Merker wenn aus Sleepmode geweckt durch WDT-Timeout (~8s)
+volatile bool interruptWoke = false;		// Merker wenn aus Sleepmode geweckt durch Sammelinterrupt
 
 
 /******************************************************************************************************/
@@ -209,7 +210,7 @@ const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefel
 const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 35;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 36;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
 byte currentPage = NEX_PAGE_MAIN;								// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
@@ -248,6 +249,7 @@ void nexWertUebernehmen(byte page, byte id, long value);		// Signatur geaendert:
 void nexEnde();
 void nexSetValue(const char* compName, long value);
 void nexSetText(const char* compName, const char* text);
+void nexSetPage(byte page);										// Nextion-Seitenwechsel per "page"-Befehl
 
 /*** loop-Ablauf	***/
 void entprellen();
@@ -276,7 +278,9 @@ void cycle();
 
 void setup()	{
 	checkDebugMode();						// Debug-Mode pruefen
-	Serial.begin(9600);						// Serial Port für Anzeige oeffnen
+	if (debugMode == true)	{				// Serial nur im Debug-Modus sofort oeffnen - im Nextion-Betrieb erst beim Einschalten des Nextion
+		Serial.begin(9600);					// Serial Port für Anzeige oeffnen
+	}
 	pinMode(INInterrupt, INPUT);			// Sammel-Interrupt fuer Sleepmode
 	pinMode(INSafety1, INPUT);				// Infrarotsensor "Safety-1-Innen"
 	pinMode(INSafety2, INPUT);    			// Infrarotsensor "Safety-2-Aussen"
@@ -325,8 +329,8 @@ void loop()	{
 /***	INTERRUPT-ROUTINE	***/
 
 void isrInterrupt()	{
-	ADCSRA |= (1<<ADEN);						// ADC wieder einschalten (war waehrend Sleepmode bewusst deaktiviert nicht automatisch abgeschaltet)
-	interruptWoke = true;						// Merker-Flag für das Hauptprogramm setzen
+	ADCSRA |= (1<<ADEN);					// ADC wieder einschalten (war waehrend Sleepmode bewusst deaktiviert nicht automatisch abgeschaltet)
+	interruptWoke = true;					// Merker-Flag für das Hauptprogramm setzen
 return;
 }
 
@@ -337,68 +341,65 @@ return;
 
 		// WICHTIG: millis()/micros() laufen waehrend SLEEP_MODE_PWR_DOWN NICHT
 
-ISR(WDT_vect)	{													// Wird bei jedem WDT-Timeout (~8s) automatisch aufgerufen
-	wdtWoke = true;													// ...WDT stellt in diesem Fall die Weckquelle dar (im Gegensatz zum Sammelinterrupt)
-																	// Wird in einem spaeteren Schritt erweitert (Zaehler zur Verkettung mehrerer 8s-Zyklen fuer laengere Schlafzeiten).
+ISR(WDT_vect)	{															// Wird bei jedem WDT-Timeout (~8s) automatisch aufgerufen
+	wdtWoke = true;															// ...WDT stellt in diesem Fall die Weckquelle dar (im Gegensatz zum Sammelinterrupt)
+																			// Wird in einem spaeteren Schritt erweitert (Zaehler zur Verkettung mehrerer 8s-Zyklen fuer laengere Schlafzeiten).
 }
 
 void wdtSetup8s()	{
-	cli();															// Interrupts kurz sperren (zeitkritische Watchdog-Umkonfiguration)
-	wdt_reset();													// Watchdog-Zaehler zuruecksetzen
-	MCUSR &= ~(1<<WDRF);											// Watchdog-Reset-Flag loeschen (sonst startet WDT im Reset- statt Interrupt-Modus)
-	WDTCSR |= (1<<WDCE) | (1<<WDE);									// Aenderungsmodus freischalten (muss binnen 4 Taktzyklen gefolgt werden)
-	WDTCSR = (1<<WDIE) | (1<<WDP3) | (1<<WDP0);						// Watchdog-Interrupt aktivieren und Timeout auf ~8s stellen
-	sei();															// Interrupts wieder freigeben
+	cli();																	// Interrupts kurz sperren (zeitkritische Watchdog-Umkonfiguration)
+	wdt_reset();															// Watchdog-Zaehler zuruecksetzen
+	MCUSR &= ~(1<<WDRF);													// Watchdog-Reset-Flag loeschen (sonst startet WDT im Reset- statt Interrupt-Modus)
+	WDTCSR |= (1<<WDCE) | (1<<WDE);											// Aenderungsmodus freischalten (muss binnen 4 Taktzyklen gefolgt werden)
+	WDTCSR = (1<<WDIE) | (1<<WDP3) | (1<<WDP0);								// Watchdog-Interrupt aktivieren und Timeout auf ~8s stellen
+	sei();																	// Interrupts wieder freigeben
 return;
 }
 
-void sleepNow()	{													// Zentrale Sleepmode-Ein-/Austrittsfunktion
-	ADCSRA &= ~(1<<ADEN);											// ADC VOR dem Schlafenlegen explizit abschalten (siehe isrInterrupt())
-	wdtSetup8s();													// Watchdog fuer ~8s-Aufwachzyklus konfigurieren
-	wdtWoke = false;												// Merker Ausloese-Flag "WDT" zuruecksetzen, bevor die CPU schlafen geht	
-	interruptWoke = false;											// Merker Ausloese-Flag "Pin-Interrupt" zuruecksetzenzuruecksetzen, bevor die CPU schlafen geht
-	EIFR |= (1<<INTF0);												// Interrupt-Flag loeschen	
+void sleepNow()	{															// Zentrale Sleepmode-Ein-/Austrittsfunktion
+	ADCSRA &= ~(1<<ADEN);													// ADC VOR dem Schlafenlegen explizit abschalten (siehe isrInterrupt())
+	wdtSetup8s();															// Watchdog fuer ~8s-Aufwachzyklus konfigurieren
+	wdtWoke = false;														// Merker Ausloese-Flag "WDT" zuruecksetzen, bevor die CPU schlafen geht	
+	interruptWoke = false;													// Merker Ausloese-Flag "Pin-Interrupt" zuruecksetzen, bevor die CPU schlafen geht
+	EIFR |= (1<<INTF0);														// Interrupt-Flag loeschen	
 	attachInterrupt(digitalPinToInterrupt(INInterrupt), isrInterrupt, RISING);		// HW-Interrupt aktivieren
-	set_sleep_mode(SLEEP_MODE_PWR_DOWN);							// Stromsparendster Modus (Timer0/millis() steht dabei still!)
+	set_sleep_mode(SLEEP_MODE_PWR_DOWN);									// Stromsparendster Modus (Timer0/millis() steht dabei still!)
 	sleep_enable();
-	sleep_cpu();													// ...hier schlaeft die CPU, bis WDT-Interrupt ODER Sammelinterrupt sie weckt
-	sleep_disable();												// ...ab hier laeuft der Code nach dem Aufwachen normal weiter
-	wdt_disable();              									// ...Watchdog deaktivieren damit kein weiterer ausgeführt werden kann
-	detachInterrupt(digitalPinToInterrupt(INInterrupt));			// HW-Interrupt deaktivieren
-	ADCSRA |= (1<<ADEN);											// ADC wieder einschalten (redundant zu isrInterrupt(), falls durch WDT statt Sammelinterrupt geweckt)
+	sleep_cpu();															// ...hier schlaeft die CPU, bis WDT-Interrupt ODER Sammelinterrupt sie weckt
+	sleep_disable();														// ...ab hier laeuft der Code nach dem Aufwachen normal weiter
+	wdt_disable();              											// Watchdog deaktivieren
+	detachInterrupt(digitalPinToInterrupt(INInterrupt));					// HW-Interrupt deaktivieren
+	ADCSRA |= (1<<ADEN);													// ADC wieder einschalten (redundant zu isrInterrupt(), falls durch WDT statt Sammelinterrupt geweckt)
 return;
 }
 
-bool sleepAllowed()	{												// Sleepmode-Sammelbedingung - alle Punkte muessen erfuellt sein
-																	// HINWEIS: speicherRead()/speicherWrite() brauchen keine eigene Pruefung da loop() sie synchron/blockierend aufruft. Dadurch kann der Sleep-Check niemals waehrend eines laufenden EEPROM-Zugriffs erreicht werden.
-	if (bitmaskRawInputs() != 0)	{								// Ein digitaler Eingang steht auf HIGH (ungeprelltes Eingangssignal)
+bool sleepAllowed()	{														// Sleepmode-Sammelbedingung - alle Punkte muessen erfuellt sein
+																			// HINWEIS: speicherRead()/speicherWrite() brauchen keine eigene Pruefung da loop() sie synchron/blockierend aufruft. Dadurch kann der Sleep-Check niemals waehrend eines laufenden EEPROM-Zugriffs erreicht werden.
+	if (bitmaskRawInputs() != 0)	{										// Ein digitaler Eingang steht auf HIGH (ungeprelltes Eingangssignal)
 		return false;
 	}
-	if (entprellungAmLaufen == true)	{							// Ein Eingang hat gerade erst gewechselt, Entprellzeit noch nicht abgelaufen...verhindert, dass ein Sleepmode mitten in der Entprellung ausgefuehrt wird
-		return false;												//
-	}
-	if (hmiReceiveInProgress == true)	{							// Ein Nextion-Telegramm wird gerade byteweise empfangen
+	if (bitmaskStateInputs() != 0)	{										// Funktion entprellen() muss abgeschlossen sein (keine Entprellung am Laufen)
 		return false;
 	}
-	if (sleepBlockNextion == true)	{								// Nextion war innerhalb der Mindest-Einschaltzeit aktiv (Seitenwechsel/Parameter)
+	if (hmiReceiveInProgress == true)	{									// Ein Nextion-Telegramm wird gerade byteweise empfangen
 		return false;
 	}
-	if (sleepBlockDaylight == true)	{								// Tageslichtmessung laeuft (Details folgen in einem spaeteren Schritt)
+	if (sleepBlockDaylight == true)	{										// Tageslichtmessung laeuft (Details folgen in einem spaeteren Schritt)
 		return false;
 	}
-	if (schrittTor != STANDBY)	{									// Torsteuerung nicht im Ruhezustand (faehrt/wartet/etc.)
+	if (schrittTor != STANDBY)	{											// Torsteuerung nicht im Ruhezustand (faehrt/wartet/etc.)
 		return false;
 	}
 	if (outputs.MotAuf || outputs.MotZu || outputs.Licht || outputs.Alarm || outputs.PowOn || outputs.NextionOn)	{	// Ein Ausgang ist aktiv
 		return false;
 	}
-	if (skAlarm || motfuseAlarm || safetyAlarm || batterieAlarm)	{	// Ein Alarm ist aktiv
+	if (skAlarm || motfuseAlarm || safetyAlarm || batterieAlarm)	{		// Ein Alarm ist aktiv
 		return false;
 	}
-	if (motfuseAlarmPending || batterieAlarmPending)	{			// Alarm-Verzoegerung laeuft noch (Grenzwert verletzt, Alarm noch nicht ausgeloest)
+	if (motfuseAlarmPending || batterieAlarmPending)	{					// Alarm-Verzoegerung laeuft noch (Grenzwert verletzt, Alarm noch nicht ausgeloest)
 		return false;
 	}
-return true;														// Keine der obigen Bedingungen traf zu -> Freigabe Sleepmode
+return true;																// Keine der obigen Bedingungen traf zu -> Freigabe Sleepmode
 }
 
 
@@ -406,8 +407,8 @@ return true;														// Keine der obigen Bedingungen traf zu -> Freigabe Sl
 /******************************************************************************************************/
 /***	FC "DEBUG-MODE: UART-AUSWAHL BEIM BOOTING	***/
 
-		// Taster beim Start NICHT gedrueckt -> sofort Nextion-Modus (kein Zeitverlust).
-		// Taster gedrueckt -> sofern "debugBootTime" erreicht wird, wird der Serial-Monitor-Modus fuer Debug-Mode aktiviert.
+		// Taster beim Start NICHT gedrueckt 	-> Nextion-Modus aktivieren
+		// Taster beim Start gedrueckt 			-> sofern "debugBootTime" erreicht, wird der Serial-Monitor-Modus fuer Debug-Mode aktiviert
 
 void checkDebugMode()	{
 	unsigned long vulStartZeit = 0;
@@ -473,7 +474,7 @@ void speicherWrite()	{
 	static byte vbTagHighbyte = 0;											// HighByte "GW-TAG" initialisieren
 	static byte vbNachtLowbyte = 0;											// LowByte "GW-NACHT" initialisieren
 	static byte vbNachtHighbyte = 0;										// HighByte "GW-NACHT" initialisieren
-	static byte vbLightTimeLowbyte = 0;										// LowByte "EINSCHALTDAUERR" initialisieren
+	static byte vbLightTimeLowbyte = 0;										// LowByte "EINSCHALTDAUER" initialisieren
 	static byte vbLightTimeHighbyte = 0;									// HighByte "EINSCHALTDAUER" initialisieren
 	static byte vbDimmlevel = 0;											// Byte "PWM-DIMMSTUFE" initialisieren
 	
@@ -556,10 +557,9 @@ void entprellen()	{
 		bool xMainstate = false;											// Komponente -> entprellter Status des Tasters 	-> default-Initialisierung
 	};
 	static struct strTASTER vaTaster[anzahlPINIn];							// Struktur-Variable (mit n-Eingaengen) erstellen
-	bool vxAmLaufen = false;												// Lokaler Sammler: wird true, sobald ein Eingang noch nicht settled ist
 		
 	for (byte i = 0; i < anzahlPINIn; i++)	{								// for-Schlaufe mit n-Durchlaeufen fuer n-Taster zu entprellen
-		bool vxRaw = (digitalRead(arrPINIn[i]) == HIGH);						// Aktuelles Rohsignal auslesen
+		bool vxRaw = (digitalRead(arrPINIn[i]) == HIGH);					// Aktuelles Rohsignal auslesen
 		if (vxRaw != vaTaster[i].xLastRaw)	{								// Wenn sich das Rohsignal seit dem letzten Durchlauf geaendert hat dann...
 			vaTaster[i].ulTime = millis();									// ...Zeitpunkt dieser Aenderung merken (Timer neu starten)
 			vaTaster[i].xLastRaw = vxRaw;									// ...neuen Rohzustand als "zuletzt beobachtet" merken
@@ -567,11 +567,7 @@ void entprellen()	{
 		if (millis() - vaTaster[i].ulTime > prellTime)	{					// Wenn das Rohsignal seit der letzten Aenderung lange genug stabil war dann...
 			vaTaster[i].xMainstate = vxRaw;									// ...entprellten Zustand uebernehmen - GILT SYMMETRISCH fuer HIGH und LOW
 		}
-		if (vxRaw != vaTaster[i].xMainstate)	{							// Rohwert weicht (noch) vom zuletzt bestaetigten entprellten Wert ab ->
-			vxAmLaufen = true;												// ...Entprellung fuer diesen Eingang ist noch nicht abgeschlossen
-		}
 	}
-	entprellungAmLaufen = vxAmLaufen;										// ...global spiegeln, damit sleepAllowed() waehrend einer laufenden Entprellung NICHT einschlafen kann
 		
 	inputs.Safety1 = vaTaster[0].xMainstate;								// Ergebnisse aus for-Schleife den spezifischen Komponenten der Struktur "inputs.xy" zuweisen
 	inputs.Safety2 = vaTaster[1].xMainstate;
@@ -621,19 +617,26 @@ return;
 /***	FC "Nextion-HMI einschalten"	***/
 
 void nextionPower()	{
-	
-	if (sleepBlockNextion == true)	{
-		if ((millis() - lastNextionActivity) >= nextionIdleTime)	{		// Nextion war laenger als Wartezeit inaktiv dann...
-			outputs.NextionOn = false;
-			sleepBlockNextion = false;										// ...Merker "aktive Kommunikation anstehend" ruecksetzen
-		}
-	}
 
-	if ((sleepBlockNextion == false) && (TstFunc.Nextion == true))	{		// Wenn Tasterfunktion "Nextion-HMI einschalten" erkannt dann...
-		outputs.NextionOn = true;
-		sleepBlockNextion = true;											// ...Merker "aktive Kommunikation anstehend" setzen
-		lastNextionActivity = millis();										// ...Mindest-Einschaltzeit resetieren, damit Sleep nicht sofort wieder greift, sobald der Taster losgelassen wird
-		hmiSendIndex = 0;													// ...Rundlauf der aktuellen HMI-Seitenanzeie von vorne beginnen, damit alle Werte nach dem Aufstarten zeitnah aktualisiert werden
+	if (TstFunc.Nextion == true)	{									// Wenn Tasterfunktion "Nextion-HMI einschalten" erkannt dann...
+		if (outputs.NextionOn == false)	{								// ...und Nextion bisher AUS war dann...
+			outputs.NextionOn = true;									//		...Nextion-Speisung einschalten
+			nextionOnTime = millis();									// 		...Einschaltzeitpunkt merken (Anlaufzeit "nextionBootTime" beginnt)
+			nextionPageForced = false;									// 		...Startseite muss nach dem Hochfahren erzwungen werden
+			currentPage = NEX_PAGE_MAIN;								// 		...Nextion startet nach dem Einschalten immer auf der Startseite
+			hmiSendIndex = 0;											// 		...Rundlauf der Seitenwerte von vorne beginnen
+			if (debugMode == false)	{									// 		...im Nextion-Betrieb UART jetzt oeffnen (im Debug-Modus laeuft Serial dauerhaft)
+				Serial.begin(9600);
+			}
+			lastNextionActivity = millis();								// 		...frischt die Inaktivitaetszeit auf
+		}
+			/***CHANGE - neu ***/
+	}
+	if ((outputs.NextionOn == true) && (millis() - lastNextionActivity >= nextionIdleTime))	{	// Wenn Nextion laenger als "nextionIdleTime" inaktiv war dann...
+		outputs.NextionOn = false;										// ...Nextion-Speisung abschalten (Sleep ist danach wieder erlaubt)
+		if (debugMode == false)	{										// ...im Nextion-Betrieb UART schliessen: TX-Pin wird hochohmig, kein Rueckspeisen in das stromlose Display
+			Serial.end();
+		}
 	}
 return;
 }
@@ -653,7 +656,7 @@ void daylight()	{
 
 	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt der Abtastzeit messen
 		vulMeasureTime = millis();
-		vbnewValue = analogRead(INADaylight);									// Lichtwert aus Photosensor auslesen -> Integerwert 0..1024
+		vbnewValue = analogRead(INADaylight);									// Lichtwert aus Photosensor auslesen -> Integerwert 0..1023
 		lightvalue = (lightvalue * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung
 	}
 
@@ -698,7 +701,7 @@ void motfuse()	{
 
 	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt des Abtastzeit tatsaechlich neu messen
 		vulMeasureTime = millis();
-		vbnewValue = analogRead(INAMotfuse);									// Sicherungsspannung messen -> Integerwert 0..1024
+		vbnewValue = analogRead(INAMotfuse);									// Sicherungsspannung messen -> Integerwert 0..1023
 		motfuseRaw = (motfuseRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung
 	}
 
@@ -731,7 +734,7 @@ void batterie()	{
 
 	if (millis() - vulMeasureTime >= samplingTime)	{						// Im Takt des Abtastzeit tatsaechlich neu messen
 		vulMeasureTime = millis();
-		vbnewValue = analogRead(INABatterie);									// Batteriespannung messen -> Integerwert 0..1024
+		vbnewValue = analogRead(INABatterie);									// Batteriespannung messen -> Integerwert 0..1023
 		batterieRaw = (batterieRaw * averageCnt + vbnewValue)/(averageCnt + 1);	// fliessende Mittelwertbildung  
 		batterieProzent = battAdcToPercent(batterieRaw);						// Ladezustand in Prozent ableiten
 	}
@@ -838,6 +841,14 @@ void hmiRead()	{
 	static byte vFFCount = 0;												// Zaehler aufeinanderfolgender 0xFF (nur fuer Terminator- bzw. Resync-Erkennung)
 	static NEX_PARSE_STATE vState = NEX_WAIT_CMD;							// Parser-Zustand (bleibt ueber Aufrufe hinweg erhalten)
 
+	if (outputs.NextionOn == false)	{										// Nextion-Speisung aus -> nichts lesen, Parser im Grundzustand halten
+		vBufLen = 0;														// ...angefangenes Telegramm verwerfen
+		vFFCount = 0;
+		vState = NEX_WAIT_CMD;
+		hmiReceiveInProgress = false;										// ...sonst bliebe Sleep blockiert, da die Timeout-Pruefung weiter unten nicht mehr laeuft
+		return;
+	}	
+
 	while (Serial.available() > 0)	{										// Solange Zeichen im UART-Puffer warten...
 		byte vB = Serial.read();
 
@@ -847,7 +858,7 @@ void hmiRead()	{
 					break;
 				}
 				vBufLen = 0;
-				vBuf[vBufLen++] = vB;											// ...Kommandobyte uebernehmen
+				vBuf[vBufLen++] = vB;										// ...Kommandobyte uebernehmen
 				vErwarteteLaenge = nexErwarteteLaenge(vB);					// ...erwartete Gesamtlaenge anhand des Kommandobytes bestimmen
 				vFFCount = 0;
 				if (vErwarteteLaenge > 0)	{								// Bekannter, ausgewerteter Telegrammtyp...
@@ -920,8 +931,7 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 	if (len == 0)	{
 		return;
 	}
-	lastNextionActivity = millis();										// jedes ausgewertete Telegramm zaehlt als Nextion-Aktivitaet fuer sleepAllowed()
-	sleepBlockNextion = true;												// Merker "aktive Kommunikation anstehend" setzen
+	lastNextionActivity = millis();											// jedes ausgewertete Telegramm zaehlt als Nextion-Aktivitaet fuer sleepAllowed()
 
 	if ((frame[0] == 0x65) && (len >= 4))	{								// Touch-Ereignis: 0x65, page, component, event - nur noch fuer den Lichttaster gebraucht
 		byte vPageId = frame[1];
@@ -936,7 +946,7 @@ void nexFrameAuswerten(byte* frame, byte len)	{
 	}
 	else if ((frame[0] == 0x66) && (len >= 2))	{							// Seitenwechsel-Meldung ("sendme", in jeder Seiten-Preinitialize hinterlegt)
 		currentPage = frame[1];												// ...aktuelle Seite merken
-		hmiSendIndex = 0;														// ...Rundlauf fuer die neue Seite von vorne beginnen
+		hmiSendIndex = 0;													// ...Rundlauf fuer die neue Seite von vorne beginnen
 	}
 	else if ((frame[0] == 0x73) && (len >= 7))	{							// Direktuebertragung Seite+ID+Wert (ersetzt 0x65+"get"+0x71 fuer Eingabefelder)
 		byte vPageId = frame[1];
@@ -1018,6 +1028,13 @@ void nexSetText(const char* compName, const char* text)	{					// "<component>.tx
 	nexEnde();
 return;
 }
+
+void nexSetPage(byte page)	{												// "page <id>" absenden -> Nextion wechselt auf diese Seite (loest deren "sendme" aus)
+	Serial.print("page ");
+	Serial.print(page);
+	nexEnde();
+return;
+}	
 
 
 /******************************************************************************************************/
@@ -1122,7 +1139,7 @@ void torsteuerung()	{
 					vxMustUp = false;										//		...Tor muss sich nicht mehr oeffnen
 				}
 			}
-			if (inputs.TstTorZu == true)	{									// Wenn Taster "HandZu" betaetigt wird dann...
+			if (inputs.TstTorZu == true)	{								// Wenn Taster "HandZu" betaetigt wird dann...
 				schrittTor = STANDBY;										// ...Sk auf STANDBY
 				vxMustUp = false;											// ...Tor muss sich nicht mehr oeffnen
 			}
@@ -1139,7 +1156,7 @@ void torsteuerung()	{
 				schrittTor = STANDBY;										// ...Sk auf STANDBY
 				vxMustDown = false;											// ...Tor muss sich nicht mehr schliessen
 			}
-			if (inputs.TstTorAuf == true)	{									// Wenn Taster "HandAuf" betaetigt wird dann...
+			if (inputs.TstTorAuf == true)	{								// Wenn Taster "HandAuf" betaetigt wird dann...
 				schrittTor = STANDBY;										// ...Sk auf STANDBY
 				vxMustDown = false;											// ...Tor muss sich nicht mehr schliessen
 			}
@@ -1161,7 +1178,7 @@ void torsteuerung()	{
 				schrittTor = STANDBY;										// ...Sk auf STANDBY
 				vxMustDown = false;											// ...Tor muss sich nicht mehr schliessen
 			}
-			if (inputs.TstTorAuf == true)	{									// Wenn Taster "HandAuf" betaetigt wird dann...
+			if (inputs.TstTorAuf == true)	{								// Wenn Taster "HandAuf" betaetigt wird dann...
 				schrittTor = STANDBY;										// ...Sk auf STANDBY
 				vxMustDown = false;											// ...Tor muss sich nicht mehr schliessen
 			}
@@ -1219,7 +1236,7 @@ void torsteuerung()	{
 		if (vxSafetyWait == true)	{										// ...Wenn "SafetyUp" ausgeloest wurde dann...
 			vulDriveTime = driveTime + waitTime;							// 		...Wartezeit "Tor ist offen" verlaengern -> erneuter Versuch "Tor schliessen" wird durchgefuehrt
 		}else{																// ...sonst...
-			vulDriveTime = driveTime;										// 		...Standart-Fahrzeit verwenden
+			vulDriveTime = driveTime;										// 		...Standard-Fahrzeit verwenden
 		}
 		if (millis() - vulGoUpTime >= vulDriveTime)	{						// ...Wenn maximale Laufzeit erreicht dann...
 			vxIsUp = true;													// 		...Status "Tor offen" auf TRUE
@@ -1312,9 +1329,9 @@ void alarmhandling()	{
 	unsigned long vulBlinkOn = 0;											// LED-Einschaltzeit
 	unsigned long vulBlinkOff1 = 0;											// LED-Ausschaltzeit bei einfachem Blinktakt
 	unsigned long vulBlinkOff2 = 0;											// LED-Ausschaltzeit bei doppeltem Blinktakt
-	unsigned long vulBlinkTimeShort = 0;									// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
+	unsigned long vulBlinkTimeShort = 0;									// Berechnung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
 	unsigned long vulBlinkTimeHalf = 0;										// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
-	unsigned long vulBlinkTimeLong = 0;										// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
+	unsigned long vulBlinkTimeLong = 0;										// Berechnung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
 		
 // Alarm-LED blinken lassen
 	if ((skAlarm == true) || (motfuseAlarm == true))	{					// Wenn Alarmstatus "Schrittkettenablauf" oder "RM Motorsicherung" auf TRUE dann...
@@ -1323,7 +1340,7 @@ void alarmhandling()	{
 	else if (safetyAlarm == true) {											// Sonst wenn Alarmstatus "Fahrfehler Tor" TRUE dann...
 		vulBlinkOn = blinktime.MainOn;										// ...Variablen fuer Blinktakt "einfach" beschreiben
 		vulBlinkOff1 = blinktime.MainOff;									// ..."dito"
-		vulBlinkTimeShort = millis() % (vulBlinkOn + vulBlinkOff1);			// Berechung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
+		vulBlinkTimeShort = millis() % (vulBlinkOn + vulBlinkOff1);			// Berechnung Rest aus "Dividation & Rest" fuer einfachen Blinktakt
 		if (vulBlinkTimeShort < vulBlinkOff1) {               				// ...Wenn "Rest" kleiner als "vulBlinkOff1" dann...
 			outputs.Alarm = false;											// 		...LED ausschalten
 		}else{                          									// ...sonst...
@@ -1334,7 +1351,7 @@ void alarmhandling()	{
 		vulBlinkOff1 = blinktime.BattFirstOff;								// ..."dito"
 		vulBlinkOff2 = blinktime.BattSecondOff;								// ..."dito"
 		vulBlinkTimeHalf = (vulBlinkOn + vulBlinkOff1 + vulBlinkOff2);		// Hilfsvariable fuer einfachere Lesbarkeit bei doppeltem Blinktakt
-		vulBlinkTimeLong = millis() % (vulBlinkOn+vulBlinkOn+vulBlinkOff1+vulBlinkOff2);														// Berechung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
+		vulBlinkTimeLong = millis() % (vulBlinkOn+vulBlinkOn+vulBlinkOff1+vulBlinkOff2);														// Berechnung Rest aus "Dividation & Rest" fuer doppelten Blinktakt
 		if ((vulBlinkTimeLong < vulBlinkOff1) || ((vulBlinkTimeLong > (vulBlinkOn+vulBlinkOff1)) && (vulBlinkTimeLong < vulBlinkTimeHalf)))	{ 	// ...wenn "Rest" kleiner als "vulBlinkOff1" ODER "Rest groesser als erste Blinksequenz" und "Rest kleiner vulBlinkTimeHalf" dann...
 			outputs.Alarm = false;											// 		...LED ausschalten
 		}else{                          									// ...sonst...
@@ -1394,6 +1411,19 @@ byte bitmaskStateAlarm()	{												// Alle Alarmzustaende in einer Bitmaske z
 void hmiSend()	{															// auf seitenbezogenen Versand umgebaut
 	static unsigned long vulTime = 0;
 	byte vAnzahlSeite = 1;													// Anzahl Werte auf der aktuellen Seite (fuer Rundlauf-Ende)
+
+	if (outputs.NextionOn == false)	{										// Nextion-Speisung aus -> keine Kommunikation
+		return;
+	}
+	if (millis() - nextionOnTime < nextionBootTime)	{						// Nextion faehrt noch hoch -> noch nichts senden
+		return;
+	}
+	if (nextionPageForced == false)	{										// Nach jedem Einschalten einmalig: Startseite erzwingen, danach beginnt der Werte-Rundlauf
+		nexSetPage(NEX_PAGE_MAIN);
+		nextionPageForced = true;
+		vulTime = millis();													// Seitenwechsel braucht Zeit, erster Wert folgt nach "hmiSendStepTime"
+		return;
+	}	
 
 	if ((millis() - vulTime >= hmiSendStepTime) && (hmiReceiveInProgress == false))	{	// Periodische Aktualisierung - PAUSIERT waehrend ein Telegramm eintrifft
 		vulTime = millis();
@@ -1456,7 +1486,7 @@ return;
 
 /******************************************************************************************************/
 /******************************************************************************************************/
-/***	FC "Displayanzeie"	***/
+/***	FC "Displayanzeige"	***/
 
 		// case-Struktur gewaehlt, damit der Buffer der seriellen Schnittstelle (max. 64Byte) in einem einzelnen Durchlauf die loop() nicht blockiert
 		// Somit ist sichergestellt das jeder case in einem einzigen Durchlauf verarbeitet werden kann.
@@ -1532,13 +1562,13 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 7:	{
-				vbStateAlarms = bitmaskStateAlarm();							// ...Anzeige der Alarmstaten als reine Bitmaske
-				Serial.print("Alarmzustand (Bitmaske wie HMI): ");				// 4 Alarmquellen (siehe bitmaskStateAlarm())
+				vbStateAlarms = bitmaskStateAlarm();						// ...Anzeige der Alarmstaten als reine Bitmaske
+				Serial.print("Alarmzustand (Bitmaske wie HMI): ");			// 4 Alarmquellen (siehe bitmaskStateAlarm())
 				for (byte i=0; i < 4; i++)	{
 					Serial.print(bitRead(vbStateAlarms, i));	}
 				Serial.println();
 			} break;
-			case 8:	{															// ...Anzeige der Alarmstaten als Text
+			case 8:	{														// ...Anzeige der Alarmstaten als Text
 				Serial.print("  [skAlarm=");
 				Serial.print(skAlarm);
 				Serial.print("  motfuseAlarm=");
@@ -1566,7 +1596,7 @@ void displayanzeige()	{
 				Serial.println("]");
 			} break;
 			case 10:	{
-				Serial.print("Zykluszeit: ");                       			// ...Anzeige der aktuellen Zykluszeit
+				Serial.print("Zykluszeit: ");								// ...Anzeige der aktuellen Zykluszeit
 				Serial.print(cycleTime);
 				Serial.println(" Microsekunden");
 				Serial.println("");
@@ -1613,7 +1643,7 @@ void cycle()	{
   
 	vulCycleCount++;                                         				// Zykluszaehler inkrementieren
   
-	if (vulCycleCount >= 100uL)  {											// Wenn Zykluszaehler groesser 100
+	if (vulCycleCount >= 100uL)  {											// Wenn Zykluszaehler groesser/gleich 100
 		cycleTime = ((micros()-vulTime)/vulCycleCount);   					// ...Zykluszeit berechnen 
 		vulCycleCount = 0;                                    				// ...Zykluszaehler resetieren
 		vulTime = micros();                          						// ...laufende Zyklus-Zwischenzeit aktualisieren
