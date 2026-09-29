@@ -1,0 +1,15 @@
+TO-DO
+
+- Stecker X14 / X59 / X38 um 180° drehen
+- D68 & D76 entfernen (schutzdiode Analogmessungen)
+- Lochdurchmesser J72 & J74 um 0.1mm vergrössern und abstände allenfalls auch
+- XJ66.11 bis XJ66.13 prüfen / korrigieren
+- J94 / J97 allenfalls drehen inkl. Source & Gate
+- Durchgangslöcher X78 & X14 um 0.3mm vergrössern
+- Pin-Anschluss für RESET (ISP-Programmer) vorsehen
+- Pin-Alarmlampe auf QD13 legen wegen CPU-Startsignal (Doppelflanke) gem. Schema-RevF
+- Boardbeschriftungen anpassen (Input/Outputs)
+- Anschluss AREF entfernen (5V)
+- Ausrichtung & Verdrahtung des RESET-Taster prüfen
+- Lichtmessung ab AnalogPin speisen und mit 220ohm-Widerstand in Serie sichern (kurzschlusschutz)
+- 
