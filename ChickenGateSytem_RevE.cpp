@@ -1,13 +1,13 @@
 /******************************************************************************************************/
 /***																								***/
 /***	ChickenGateSystem Rev.E		- im Code nachtragen											***/
-/***	Korrekturversion: V36		- im Code nachtragen											***/
+/***	Korrekturversion: V37		- im Code nachtragen											***/
 /***																								***/
 /***																								***/
 /***	Sleepmode fuer Energieeinsparung mit PWR_DOWN-Modus											***/
 /***	Funktion entprellen() geaendert	(prueft steigend & fallende Flanke fuer Erkennung			***/
-/***	Reset-Taster: Mehrfachfunktion je nach Tastdruck-Laenge	(Debug / Reset / Nextion)			***/
-/***	Debug-Mode fuer serielle Ausgabe bei CPU-Start waehlbar	durch Reset-Taster					***/
+/***	Mulit/Reset-Taster: Mehrfachfunktion je nach Tastdruck-Laenge	(Debug / Reset / Nextion)	***/
+/***	Debug-Mode fuer serielle Ausgabe bei CPU-Start waehlbar	durch Multi/Reset-Taster			***/
 /***	EEPROM-Magic-Byte fuer Plausibilitaetspruefung												***/
 /***	Pruefung & Korrektur von HMI-Grenzwertparametern											***/
 /***	Sensorspeisung KEIN bistabiles Relais mehr													***/
@@ -17,6 +17,8 @@
 /***	"Licht Stall" mit Hardware-PWM umgesetzt													***/
 /***	UART-Kommunikation Nextion-Touchpanel angepasst												***/
 /***	Nextion-Kommunikation umgebaut - NICHT abwaertskompatibel									***/
+/***																								***/
+/***	--> Bei Anpassung auf Rev.F die DigitalBuffers fuer Analogeingaenge anpassen !!!			***/
 /******************************************************************************************************/
 
 
@@ -51,6 +53,8 @@ const byte OUTLicht = 11;   				// Beleuchtung "Licht Stall" einschalten
 const byte OUTPowOn = 12;  					// "Torsensoren/partielle Motorspeisung" einschalten
 const byte OUTAlarm = 13;     				// Signal-LED "Alarm"
 const byte OUTNextionOn = A2;				// Einschalten Nextion-HMI-Speisung - A2 als Digital-Output verwendet
+//const byte OUTNextionOn = A0;				// Einschalten Nextion-HMI-Speisung - A2 als Digital-Output verwendet
+//const byte OUTMeasureOn = A1;				// Einschalten "Messung Tageslicht" - A0 als Digital-Output verwendet
 
 const byte arrPINIn[] = {INSafety1, INSafety2, INTstTorAuf, INTstTorZu, INTstLicht, INTstMultiReset};// Array "arrPINIn" definieren und initialisieren
 const byte anzahlPINIn = sizeof(arrPINIn);														// Arraygroesse "arrPINIn" bestimmen (zwingend eine Konstante)
@@ -118,12 +122,12 @@ int dimmlevel = DEF_DIMMLEVEL;				// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int lighttime = DEF_LIGHTTIME;				// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
 const int averageCnt = 10;					// Anzahl Messzyklen fuer Mittelwertbildung
-const unsigned long samplingTime = 200;		// Abtastrate der Analogmessungen (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
+const unsigned long samplingTime = 200;		// Abtastrate Analogmessungen - mind.50ms!! (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
 const unsigned long holdTimeNextion = 3000;	// Min.Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
 const int gwMotfuseRaw = 546;				// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
 const int gwBatterieRaw = 810;				// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
 int motfuseRaw = 0;							// aktueller Rohwert "RM Motorsicherung"
-int batterieRaw = 1023;						// aktueller Rohwert "Batteriespannung"				[Startwert = 1023 um Initialalarm zu verhindern]
+int batterieRaw = 0;						// aktueller Rohwert "Batteriespannung"
 int batterieProzent = 0;					// Batterieladung in Prozent						[SOC, aus "batterieRaw" abgeleitet]
 
 int cntSafetyFail = 0;						// laufender Zaehler "Fahrfehler Tor"
@@ -210,7 +214,7 @@ const char NEX_NAME_ACTCYCLETIME[] = "pSystem.nb309";			// Objektname Anzeigefel
 const char NEX_NAME_ACTSTATEINPUT[] = "pInputs.vaInputs";		// Name der Hilfsvariable "Signalzustand der Inputs"
 
 const char REVISION_SCHEMA = 'E';								// Aktuelle Schema-Revision	(Buchstabe, manuell nachfuehren)
-const byte REVISION_CODE = 36;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
+const byte REVISION_CODE = 37;									// Aktuelle Code-Revision 	(Zahl 0-99, manuell nachfuehren)	
 
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};	// Zustaende des laengenbasierten Nextion-Parsers
 byte currentPage = NEX_PAGE_MAIN;								// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
@@ -235,6 +239,7 @@ void isrInterrupt();
 void wdtSetup8s();												// Watchdog-Timer auf ~8s Interrupt-Modus konfigurieren (kein Reset)
 void sleepNow();												// CPU in Power-down-Sleepmode versetzen
 bool sleepAllowed();											// Freigabe Sleepmode - prueft alle Ausschlusskriterien
+void attemptSleep();											// Sleep-Aufruf aus loop() fuer beide Betriebsarten (Nextion oder Debug-Mode)
 void checkDebugMode();
 void speicherRead();
 void speicherWrite();
@@ -312,15 +317,16 @@ void loop()	{
 	}
 	torsteuerung();							// FC "Torsteuerung"
 	beleuchtung();							// FC "Innenbeleuchtung Stall"
-	ausgaenge();							// FC "Ausgangsvariablen setzen"
 	alarmhandling();						// FC "Alarmhandling" mit Parameteruebergabe der verschiedenen Blinkzeiten
+	ausgaenge();							// FC "Ausgangsvariablen setzen"
 	if (debugMode == false)	{
 		hmiSend();							// FC "HMI Daten senden"
 	} else {
 	displayanzeige();						// FC "Displayanzeige"
 	}
 	cycle();								// FC "Zykluszeit berechnen"
-	firstCycle = false;						// Merker "erster Zyklus" zuruecksetzen									
+	firstCycle = false;						// Merker "erster Zyklus" zuruecksetzen	
+	attemptSleep();							// FC "Sleepmode ausfuehren"
 }
 
 
@@ -400,6 +406,43 @@ bool sleepAllowed()	{														// Sleepmode-Sammelbedingung - alle Punkte mu
 		return false;
 	}
 return true;																// Keine der obigen Bedingungen traf zu -> Freigabe Sleepmode
+}
+
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/***	FC "Sleepmode ausfuehren"	***/
+
+void attemptSleep()	{
+	
+		// Sleepmode ausfuehren mit unterschiedlichem Ablauf je nach Betriebsmodi (Nextion oder Debug-Mode)
+		// Im Debug-Betrieb mit Diagnose-Ausgabe, im Nextion-Betrieb ohne diese
+
+	if (sleepAllowed() == true)	{
+		if (debugMode == true)	{											// Testausgabe fuer Sleepmode
+			Serial.print("--> CPU-Laufzeit vor Schlafen...");
+			Serial.println(millis());
+			Serial.println("");
+			Serial.flush();													// WICHTIG: Sendepuffer VOR dem Schlafen vollstaendig leeren, sonst bleiben Bytes haengen
+		}
+		sleepNow();
+		if (debugMode == true)	{											// Testausgabe fuer Sleepmode
+			if (wdtWoke == true)	{										// Geweckt durch WDT-Timeout -> vollstaendiger ~8s-Zyklus abgelaufen
+				Serial.println("<-- WDT");
+				Serial.print("<-- CPU-Laufzeit nach Schlafen...");
+				Serial.println(millis());
+				Serial.println("");
+			}else if (interruptWoke)	{									// Geweckt durch Sammelinterrupt -> vorzeitig, weniger als 8s WDT-Timeout
+				Serial.println("<-- Sammelinterrupt");
+				Serial.print("<-- CPU-Laufzeit nach Schlafen...");
+				Serial.println(millis());
+				Serial.println("");
+			}else{
+				Serial.println("<-- aufgewacht, aber weder WDT noch Sammelinterrupt erkannt");
+			}
+		}
+	}
+return;
 }
 
 
@@ -1611,27 +1654,6 @@ void displayanzeige()	{
 		vDebugSendIndex++;
 		if (vDebugSendIndex >= anzahlZeilenanzeige)	{
 			vDebugSendIndex = 0;											// nach der letzten Zeile wieder von vorne
-		}
-	}
-	
-	if (sleepAllowed() == true)	{											// Testausgabe fuer Sleepmode
-		Serial.print("--> CPU-Laufzeit vor Schlafen...");
-		Serial.println(millis());
-		Serial.println("");
-		Serial.flush();														// WICHTIG: Sendepuffer VOR dem Schlafen vollstaendig leeren, sonst bleiben Bytes haengen
-		sleepNow();
-		if (wdtWoke == true)	{											// Geweckt durch WDT-Timeout -> vollstaendiger ~8s-Zyklus abgelaufen
-			Serial.println("<-- WDT");
-			Serial.print("<-- CPU-Laufzeit nach Schlafen...");
-			Serial.println(millis());
-			Serial.println("");
-		}else if (interruptWoke)	{										// Geweckt durch Sammelinterrupt -> vorzeitig, weniger als 8s WDT-Timeout
-			Serial.println("<-- Sammelinterrupt");
-			Serial.print("<-- CPU-Laufzeit nach Schlafen...");
-			Serial.println(millis());
-			Serial.println("");
-		}else{
-			Serial.println("<-- aufgewacht, aber weder WDT noch Sammelinterrupt erkannt");
 		}
 	}
 return;
