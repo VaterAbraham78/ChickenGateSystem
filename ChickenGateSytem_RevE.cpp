@@ -96,24 +96,25 @@ const unsigned long measureSettleTime = 50;		// Einschwingzeit der Lichtmessung 
 const unsigned long motfuseAlaTime = 3000;		// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest		[in Millisekunden]
 const unsigned long battAlaTime = 5000;			// Alarmverzoegerung "Batterieladung" zu tief		[in Millisekunden]
 const unsigned long relaisTime = 500;			// Relais-Ansteuerzeit fuer die bistabilen Relais	[in Millisekunden]
-const unsigned long driveTime = 28000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
+const unsigned long driveTime = 26000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
 const unsigned long waitTime = 45000;			// zusaetzliche Wartezeit zur maximalen Fahrzeit vom Tor wenn ein "SafetyUp" ausgeloest wurde
-const unsigned long debugBootTime = 2000;		// Notwendige Haltezeit des Reset-Tasters bei Controllerstart	[in Millisekunden]
+const unsigned long debugBootTime = 2000;		// Notwendige Haltezeit des Reset-Tasters bei Controllerstart							[in Millisekunden]
+const unsigned long holdTimeNextionOn = 2000;	// Mindest-Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
 
 const int DEF_GWVALNACHT = 200;					// Default Grenzwert Nacht-Status	[Integerwert]
 const int DEF_GWVALTAG = 500;					// Default Grenzwert Tag-Status		[Integerwert]
+const int GWHYSTERESE = 50;						// Hysteresebreite fuer Tag/Nacht-Umschaltung
 const int MIN_GWBEREICH = 0;					// allgemein min. Analogwert		[Integerwert]
 const int MAX_GWBEREICH = 1023;					// allgemein max. Analogwert		[Integerwert]
 const int MIN_DIMMLEVEL = 1;					// min. PWM-Dimmstufe		[in %]
 const int MAX_DIMMLEVEL = 100;					// max. PWM-Dimmstufe		[in %]
-const int DEF_DIMMLEVEL = 50;					// Default PWM-Dimmstufe	[in %]
+const int DEF_DIMMLEVEL = 10;					// Default PWM-Dimmstufe	[in %]
 const int MIN_LIGHTTIME = 2;					// min. Einschaltdauer		[in Sekunden]
 const int MAX_LIGHTTIME = 1800;					// max. Einschaltdauer		[in Sekunden]
-const int DEF_LIGHTTIME = 10;					// Default Einschaltdauer	[in Sekunden]
+const int DEF_LIGHTTIME = 20;					// Default Einschaltdauer	[in Sekunden]
 											
 int gwValueNacht = DEF_GWVALNACHT;				// HMI-Grenzwertvorgabe fuer Helligkeit "NACHT"
 int gwValueTag = DEF_GWVALTAG;  				// HMI-Grenzwertvorgabe fuer Helligkeit "TAG"
-const int gwHystValue = 50;						// Hysteresebreite fuer Tag/Nacht-Umschaltung
 int lightvalue = 0;								// aktueller Lichtwert "Tageslicht"
 
 bool stateTag = true;    						// Status "Tag" beim Start auf "TRUE" initialisieren damit Tor geoeffnet wird
@@ -124,8 +125,7 @@ int dimmlevel = DEF_DIMMLEVEL;					// PWM-Dimmstufe "Licht Stall"						[0..100%]
 int lighttime = DEF_LIGHTTIME;					// maximale Einschaltzeit "Licht Stall"				[in Sekunden]
 
 const int averageCnt = 10;						// Anzahl Messzyklen fuer Mittelwertbildung
-const unsigned long samplingTime = 200;			// Abtastrate Analogmessungen - mind.50ms!! (Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
-const unsigned long holdTimeNextionOn = 2000;		// Min.Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
+const unsigned long samplingTime = 200;			// Abtastrate Analogmessungen - mindestens 50ms !!	(Tageslicht/Motorsicherung/Batterie)	[in Millisekunden]
 const int gwMotfuseRaw = 546;					// Grenzwert "RM Motorsicherung"					[546=8.00V = Sicherung ausgeloest]
 const int gwBatterieRaw = 810;					// Grenzwert "Batteriespannung tief"				[810 = 11.85V = 30%]
 int motfuseRaw = 0;								// aktueller Rohwert "RM Motorsicherung"
@@ -161,9 +161,9 @@ const unsigned long debugStepTime = serialMonitorTime / anzahlZeilenanzeige;				
 unsigned long cycleTime = 0;					// aktuelle Zykluszeit	[in Microsekunden]
 
 // Hilfsvariablen fuer den Sleepmode
-const unsigned long nextionIdleTime = 15000;	// Inaktivitaetszeit des Nextion-HMI bevor Speisung abgeschaltet wird	[in Millisekunden]
-const unsigned long nextionBootTime = 1000;		// Anlaufzeit des Nextion nach dem Einschalten, um Startseite anzufragen und Daten zu senden
-const unsigned long nextionNumFieldTimeout = 120000;	// Timeout, falls Eingabefeld ohne Bestaetigung verlassen wird (z.B. durch Antippen ausserhalb) und daher kein 0x73 eintrifft	[in Millisekunden]
+const unsigned long nextionIdleTime = 60000;	// Inaktivitaetszeit des Nextion-HMI bevor Speisung abgeschaltet wird											[in Millisekunden]
+const unsigned long nextionBootTime = 1000;		// Anlaufzeit des Nextion nach dem Einschalten, um Startseite anzufragen und Daten zu senden					[in Millisekunden]
+const unsigned long nextionNumFieldTimeout = 120000;	// Timeout, falls Eingabefeld nicht ODER ohne Bestaetigung verlassen wird und daher kein 0x73 eintrifft	[in Millisekunden]
 unsigned long lastNextionActivity = 0;			// Zeitpunkt der letzten Aktivitaet des Nextion-HMI
 unsigned long nextionOnTime = 0;				// Zeitpunkt, an dem die Nextion-Speisung zuletzt eingeschaltet wurde
 unsigned long nextionNumFieldOpenTime = 0;		// Zeitpunkt, an dem das aktuell offene Eingabefeld angetippt wurde	
@@ -230,7 +230,6 @@ const byte REVISION_CODE = 40;											// Aktuelle Code-Revision 	(Zahl 0-99, 
 enum NEX_PARSE_STATE {NEX_WAIT_CMD, NEX_COLLECT_PAYLOAD, NEX_WAIT_TERM, NEX_SKIP_UNKNOWN};		// Zustaende des laengenbasierten Nextion-Parsers
 byte currentPage = NEX_PAGE_MAIN;										// aktuell auf dem Nextion angezeigte Seite (per "sendme"/0x66 ermittelt)
 byte hmiSendIndex = 0;													// Index innerhalb der aktuellen Seite fuer hmiSend() (seitenuebergreifend zugreifbar, da bei Seitenwechsel in nexFrameAuswerten() zurueckgesetzt)	
-
 
 const unsigned long nextionSendStep = 150;								// Zeitabstand je Einzelwert um Serial-Blockade zu verhindern
 const unsigned long nextionRxTimeout = 200;								// Sicherheitsabschaltung falls ein Telegramm nie fertig eintrifft [ms]
@@ -308,6 +307,7 @@ void setup()	{
 	pinMode(OUTLicht, OUTPUT);    				// Licht "Stall" einschalten
 	pinMode(OUTAlarm, OUTPUT);    				// Signal-LED "Alarm"
 	pinMode(OUTPowOn, OUTPUT);					// Torsensoren/partielle Motorspeisung "einschalten"
+	pinMode(OUTMeasureOn, OUTPUT);				// Speisung "Messung Tageslicht" einschalten
 	pinMode(OUTNextionOn, OUTPUT);				// Nextion-HMI-Speisung einschalten
 	ACSR |= (1<<ACD);							// Analogkomparator dauerhaft abschalten - wird in diesem Projekt nicht verwendet (AIN0/AIN1)
 	DIDR0 |= (1<<ADC0D) | (1<<ADC4D) | (1<<ADC5D);		// Digitale Eingangspuffer der genutzten Analogpins (A0/A4/A5) dauerhaft abschalten
@@ -476,7 +476,7 @@ void speicherRead()	{
 	byte vbLightTimeLowbyte = EEPROM.read(ADDR_LIGHTTIME_LO);			// LowByte "EINSCHALTDAUER" lesen
 	byte vbLightTimeHighbyte = EEPROM.read(ADDR_LIGHTTIME_HI);			// HighByte "EINSCHALTDAUER" lesen
 	byte vbDimmlevel = EEPROM.read(ADDR_DIMMLEVEL);						// Byte "DIMMSTUFE 0..100%" lesen
-		
+
 	gwValueTag = vbTagLowbyte + (((unsigned int)vbTagHighbyte << 8) & 0xFF00);					// Low- und HighByte "TAG" zusammenfuehren
 	gwValueNacht = vbNachtLowbyte + (((unsigned int)vbNachtHighbyte << 8) & 0xFF00);			// Low- und HighByte "NACHT" zusammenfuehren
 	checkGwBereich();													// Grenzwertvorgabe in FC pruefen
@@ -540,11 +540,11 @@ void checkGwBereich()	{
 	if (viHighMax > MAX_GWBEREICH)	{									// Check des hoeheren "GW-TAG"
 	viHighMax = MAX_GWBEREICH;	}	
 	
-	viLowMax = viHighMax - gwHystValue;									// Bereichsende definieren und erneut pruefen
+	viLowMax = viHighMax - GWHYSTERESE;									// Bereichsende definieren und erneut pruefen
 	if (viLowMax < MIN_GWBEREICH)	{
 		viLowMax = MIN_GWBEREICH;	}
 		
-	viHighMin = viLowMax + gwHystValue;									// Bereichsende definieren
+	viHighMin = viLowMax + GWHYSTERESE;									// Bereichsende definieren
 	if (viLowMin > viLowMax)	{										// ggf. Bereichswerte korrigieren -> bedingt notwendig. Falscher Wert haette keinen Einfluss mehr
 		viLowMin = viLowMax;	}
 	if (viHighMax < viHighMin)	{										// ggf. Bereichswerte korrigieren -> bedingt notwendig. Falscher Wert haette keinen Einfluss mehr
