@@ -12,16 +12,17 @@ TO-DO
 - Anschluss AREF entfernen (5V)
 - Ausrichtung & Verdrahtung des RESET-Taster prüfen
 - Lichtmessung ab AnalogPin speisen und mit 220ohm-Widerstand in Serie sichern (kurzschlusschutz)
+- 5VDC-Elko von 22uF auf 470uF erhöhen, zusätzlich 22uF 
 
 
 
 CLAUDDE
 Aus dem letzten Review weiterhin offen (heute nicht angefasst)
 - sleepNow()-Race-Fenster (cli()/sei()-Reihenfolge) und sleep_bod_disable()
-IO - Kommentar-Kleinigkeiten: else-Kommentare in torsteuerung() (Z. 1206/1222, "sonst wenn Tor muss sich schliessen/öffnen" → sollte "…muss sich nicht…" heissen)
 - Ein Zeitstempel pro Durchlauf in entprellen() (Optimierung)
-IO - Schritt 3 der Sleepmode-Planung: Helligkeitsmessung mit 5s/photoTime-Logik in die Sleep-Entscheidung integrieren – jetzt, da die CPU im Nextion-Betrieb tatsächlich schläft, wird das relevant
 - Aufwärtsbewegung bei Motfuse-Alarm auslösen
 IO - Motfuse-Alarm nur beim abwärtsfahren prüfen
 IO - WDT verlängern auf 8WDT-Zyklen
 IO - Nextion-Eingabefeld wird vor sleepmode nicht erkannt
+IO - Kommentar-Kleinigkeiten: else-Kommentare in torsteuerung() (Z. 1206/1222, "sonst wenn Tor muss sich schliessen/öffnen" → sollte "…muss sich nicht…" heissen)
+IO - Schritt 3 der Sleepmode-Planung: Helligkeitsmessung mit 5s/photoTime-Logik in die Sleep-Entscheidung integrieren – jetzt, da die CPU im Nextion-Betrieb tatsächlich schläft, wird das relevant

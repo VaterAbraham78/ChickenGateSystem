@@ -89,15 +89,15 @@ struct strBLINK	{														// Struktur-Architektur fuer verschiedene Blinkze
 } blinktime = {800, 400, 100, 1000, 200};								// 		...Struktur-Variable fuer "blinktime" erstellen und initialisieren
 
 const unsigned long prellTime = 20;   			// Entprellzeit fuer die Eingangssignale   			[in Millisekunden]
-const unsigned long daylightCheckTime = 60000; 	// Hysteresezeit der Tag/Nacht-Umschaltung   		[in Millisekunden]
+const unsigned long daylightCheckTime = 10000; 	// Hysteresezeit der Tag/Nacht-Umschaltung   		[in Millisekunden]
 const unsigned long daylightQuickTime = 5000;	// Kurzpruefung der Lichtmessung bei jedem Messzyklus, bevor ggf. auf "daylightCheckTime" ausgeweitet wird	[in Millisekunden]
-const unsigned long daylightIntervalTime = 300000;	// Intervall fuer Lichtmessung seit dem letzten Messungsabschluss (ohne WDT-/Interrupt-Aufwachen)		[in Millisekunden]
+const unsigned long daylightIntervalTime = 60000;	// Intervall fuer Lichtmessung seit dem letzten Messungsabschluss (ohne WDT-/Interrupt-Aufwachen)		[in Millisekunden]
 const unsigned long measureSettleTime = 50;		// Einschwingzeit der Lichtmessung nach dem Einschalten von "MeasureOn"
 const unsigned long motfuseAlaTime = 3000;		// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest		[in Millisekunden]
 const unsigned long battAlaTime = 5000;			// Alarmverzoegerung "Batterieladung" zu tief		[in Millisekunden]
 const unsigned long relaisTime = 500;			// Relais-Ansteuerzeit fuer die bistabilen Relais	[in Millisekunden]
-const unsigned long driveTime = 26000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
-const unsigned long waitTime = 45000;			// zusaetzliche Wartezeit zur maximalen Fahrzeit vom Tor wenn ein "SafetyUp" ausgeloest wurde
+const unsigned long driveTime = 20000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
+const unsigned long waitTime = 15000;			// zusaetzliche Wartezeit zur maximalen Fahrzeit vom Tor wenn ein "SafetyUp" ausgeloest wurde
 const unsigned long debugBootTime = 2000;		// Notwendige Haltezeit des Reset-Tasters bei Controllerstart							[in Millisekunden]
 const unsigned long holdTimeNextionOn = 2000;	// Mindest-Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
 
@@ -161,7 +161,7 @@ const unsigned long debugStepTime = serialMonitorTime / anzahlZeilenanzeige;				
 unsigned long cycleTime = 0;					// aktuelle Zykluszeit	[in Microsekunden]
 
 // Hilfsvariablen fuer den Sleepmode
-const unsigned long nextionIdleTime = 60000;	// Inaktivitaetszeit des Nextion-HMI bevor Speisung abgeschaltet wird											[in Millisekunden]
+const unsigned long nextionIdleTime = 10000;	// Inaktivitaetszeit des Nextion-HMI bevor Speisung abgeschaltet wird											[in Millisekunden]
 const unsigned long nextionBootTime = 1000;		// Anlaufzeit des Nextion nach dem Einschalten, um Startseite anzufragen und Daten zu senden					[in Millisekunden]
 const unsigned long nextionNumFieldTimeout = 120000;	// Timeout, falls Eingabefeld nicht ODER ohne Bestaetigung verlassen wird und daher kein 0x73 eintrifft	[in Millisekunden]
 unsigned long lastNextionActivity = 0;			// Zeitpunkt der letzten Aktivitaet des Nextion-HMI
@@ -174,7 +174,7 @@ bool sleepBlockedTorSettling = false;			// TRUE fuer einen loop()-Durchlauf, wen
 bool motfuseAlarmPending = false;				// Spiegelt "vxState" aus motfuse() - Alarmverzoegerung laeuft
 bool batterieAlarmPending = false;				// Spiegelt "vxState" aus batterie() - Alarmverzoegerung laeuft
 
-const byte wdtCyclesForSleep = 8;				// Anzahl WDT-Zyklen (je ~8s), die ohne echtes Aufwachen verkettet werden -> ~64s effektive Schlafzeit
+const byte wdtCyclesForSleep = 2;				// Anzahl WDT-Zyklen (je ~8s), die ohne echtes Aufwachen verkettet werden -> ~64s effektive Schlafzeit
 volatile bool wdtWoke = false;					// Merker wenn aus Sleepmode geweckt durch WDT-Timeout (~8s)
 volatile bool interruptWoke = false;			// Merker wenn aus Sleepmode geweckt durch Sammelinterrupt
 volatile byte wdtCycleCount = 0;				// Laufender Zaehler der WDT-Interrupts seit dem letzten Aufwachen
@@ -424,7 +424,7 @@ bool sleepAllowed()	{													// Sleepmode-Sammelbedingung - alle Punkte mue
 	if (motfuseAlarmPending || batterieAlarmPending)	{				// Alarm-Verzoegerung laeuft noch (Grenzwert verletzt, Alarm noch nicht ausgeloest)
 		return false;
 	}
-return true;															// Keine der obigen Bedingungen traf zu -> Freigabe Sleepmode
+return false;															// Keine der obigen Bedingungen traf zu -> Freigabe Sleepmode
 }
 
 
