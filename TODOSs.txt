@@ -12,7 +12,8 @@ TO-DO
 - Anschluss AREF entfernen (5V)
 - Ausrichtung & Verdrahtung des RESET-Taster prüfen
 - Lichtmessung ab AnalogPin speisen und mit 220ohm-Widerstand in Serie sichern (kurzschlusschutz)
-- 5VDC-Elko von 22uF auf 470uF erhöhen, zusätzlich 22uF 
+- 5VDC-Elko von 22uF auf 470uF erhöhen, zusätzlich 22uF für den Nextion-Betrieb
+- 12DC-Elko von 100uF auf 390uF erhöhen
 
 
 
