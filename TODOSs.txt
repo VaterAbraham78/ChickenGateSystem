@@ -14,6 +14,9 @@ TO-DO
 - Lichtmessung ab AnalogPin speisen und mit 220ohm-Widerstand in Serie sichern (kurzschlusschutz)
 - 5VDC-Elko von 22uF auf 470uF erhöhen, zusätzlich 22uF für den Nextion-Betrieb
 - 12DC-Elko von 100uF auf 390uF erhöhen
+- TVS-Schutzdiode bei Motorenabgang
+- Schottky-Diode für Schaltregler und dahinter der 12V-kondensator
+
 
 
 
