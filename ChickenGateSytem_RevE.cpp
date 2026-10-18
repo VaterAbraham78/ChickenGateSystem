@@ -91,12 +91,12 @@ struct strBLINK	{														// Struktur-Architektur fuer verschiedene Blinkze
 const unsigned long prellTime = 20;   			// Entprellzeit fuer die Eingangssignale   			[in Millisekunden]
 const unsigned long daylightCheckTime = 60000; 	// Hysteresezeit der Tag/Nacht-Umschaltung   		[in Millisekunden]
 const unsigned long daylightQuickTime = 5000;	// Kurzpruefung der Lichtmessung bei jedem Messzyklus, bevor ggf. auf "daylightCheckTime" ausgeweitet wird	[in Millisekunden]
-const unsigned long daylightIntervalTime = 300000;	// Intervall fuer Lichtmessung seit dem letzten Messungsabschluss (ohne WDT-/Interrupt-Aufwachen)		[in Millisekunden]
+const unsigned long daylightIntervalTime = 180000;	// Intervall fuer Lichtmessung seit dem letzten Messungsabschluss (ohne WDT-/Interrupt-Aufwachen)		[in Millisekunden]
 const unsigned long measureSettleTime = 50;		// Einschwingzeit der Lichtmessung nach dem Einschalten von "MeasureOn"
 const unsigned long motfuseAlaTime = 3000;		// Alarmverzoegerung "RM Motorsicherung" hat ausgeloest		[in Millisekunden]
-const unsigned long battAlaTime = 5000;			// Alarmverzoegerung "Batterieladung" zu tief		[in Millisekunden]
+const unsigned long battAlaTime = 10000;		// Alarmverzoegerung "Batterieladung" zu tief		[in Millisekunden]
 const unsigned long relaisTime = 500;			// Relais-Ansteuerzeit fuer die bistabilen Relais	[in Millisekunden]
-const unsigned long driveTime = 26000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
+const unsigned long driveTime = 24000;			// maximale Fahrzeit vom Tor bis Endlage erreicht sein muss
 const unsigned long waitTime = 45000;			// zusaetzliche Wartezeit zur maximalen Fahrzeit vom Tor wenn ein "SafetyUp" ausgeloest wurde
 const unsigned long debugBootTime = 2000;		// Notwendige Haltezeit des Reset-Tasters bei Controllerstart							[in Millisekunden]
 const unsigned long holdTimeNextionOn = 2000;	// Mindest-Haltezeit Multifunktion-Reset-Taster zur Laufzeit, um Nextion einzuschalten	[in Millisekunden]
@@ -174,7 +174,7 @@ bool sleepBlockedTorSettling = false;			// TRUE fuer einen loop()-Durchlauf, wen
 bool motfuseAlarmPending = false;				// Spiegelt "vxState" aus motfuse() - Alarmverzoegerung laeuft
 bool batterieAlarmPending = false;				// Spiegelt "vxState" aus batterie() - Alarmverzoegerung laeuft
 
-const byte wdtCyclesForSleep = 8;				// Anzahl WDT-Zyklen (je ~8s), die ohne echtes Aufwachen verkettet werden -> ~64s effektive Schlafzeit
+const byte wdtCyclesForSleep = 24;				// Anzahl WDT-Zyklen (je ~8s), die ohne echtes Aufwachen verkettet werden -> ~64s effektive Schlafzeit
 volatile bool wdtWoke = false;					// Merker wenn aus Sleepmode geweckt durch WDT-Timeout (~8s)
 volatile bool interruptWoke = false;			// Merker wenn aus Sleepmode geweckt durch Sammelinterrupt
 volatile byte wdtCycleCount = 0;				// Laufender Zaehler der WDT-Interrupts seit dem letzten Aufwachen
