@@ -1,21 +1,23 @@
 TO-DO
 
-- Stecker X14 / X59 / X38 um 180° drehen
-- D68 & D76 entfernen (schutzdiode Analogmessungen)
-- Lochdurchmesser J72 & J74 um 0.1mm vergrössern und abstände allenfalls auch
-- XJ66.11 bis XJ66.13 prüfen / korrigieren
-- J94 / J97 allenfalls drehen inkl. Source & Gate
-- Durchgangslöcher X78 & X14 um 0.3mm vergrössern
-- Pin-Anschluss für RESET (ISP-Programmer) vorsehen
-- Pin-Alarmlampe auf QD13 legen wegen CPU-Startsignal (Doppelflanke) gem. Schema-RevF
-- Boardbeschriftungen anpassen (Input/Outputs)
-- Anschluss AREF entfernen (5V)
-- Ausrichtung & Verdrahtung des RESET-Taster prüfen
-- Lichtmessung ab AnalogPin speisen und mit 220ohm-Widerstand in Serie sichern (kurzschlusschutz)
-- 5VDC-Elko von 22uF auf 470uF erhöhen, zusätzlich 22uF für den Nextion-Betrieb
-- 12DC-Elko von 100uF auf 390uF erhöhen
-- TVS-Schutzdiode bei Motorenabgang
-- Schottky-Diode für Schaltregler und dahinter der 12V-kondensator
+IO - Stecker X14 / X59 / X38 um 180° drehen
+IO - D68 & D76 entfernen (schutzdiode Analogmessungen)
+IO - Lochdurchmesser J72 & J74 um 0.1mm vergrössern und abstände allenfalls auch
+IO - XJ66.11 bis XJ66.13 prüfen / korrigieren
+IO - J94 / J97 allenfalls drehen inkl. Source & Gate
+IO - Durchgangslöcher X78 & X14 um 0.3mm vergrössern
+IO - Pin-Anschluss für RESET (ISP-Programmer) vorsehen
+IO - Pin-Alarmlampe auf QD13 legen wegen CPU-Startsignal (Doppelflanke) gem. Schema-RevF
+IO - Boardbeschriftungen anpassen (Input/Outputs)
+IO - Anschluss AREF entfernen (5V)
+IO - Ausrichtung & Verdrahtung des RESET-Taster prüfen
+IO - Lichtmessung ab AnalogPin speisen und mit 220ohm-Widerstand in Serie sichern (kurzschlusschutz)
+IO - ANGEPASST - 5VDC-Elko von 22uF auf 470uF erhöhen, zusätzlich 22uF für den Nextion-Betrieb
+IO - ANGEPASST - 12DC-Elko von 100uF auf 390uF erhöhen
+IO - TVS-Schutzdiode bei Motorenabgang
+IO - Schottky-Diode für Schaltregler und dahinter der 12V-Kondensator
+IO - Anspeisung D93 / R93 nach Sicherung F94 erstellen
+IO - V16 ist neu vom Typ SB240
 
 
 
@@ -27,6 +29,6 @@ Aus dem letzten Review weiterhin offen (heute nicht angefasst)
 - Aufwärtsbewegung bei Motfuse-Alarm auslösen
 IO - Motfuse-Alarm nur beim abwärtsfahren prüfen
 IO - WDT verlängern auf 8WDT-Zyklen
-IO - Nextion-Eingabefeld wird vor sleepmode nicht erkannt
+IO - Nextion-Eingabefeld wird vom Sleepmode nicht erkannt
 IO - Kommentar-Kleinigkeiten: else-Kommentare in torsteuerung() (Z. 1206/1222, "sonst wenn Tor muss sich schliessen/öffnen" → sollte "…muss sich nicht…" heissen)
 IO - Schritt 3 der Sleepmode-Planung: Helligkeitsmessung mit 5s/photoTime-Logik in die Sleep-Entscheidung integrieren – jetzt, da die CPU im Nextion-Betrieb tatsächlich schläft, wird das relevant
